@@ -1,0 +1,850 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Gridiron Edge · NFL Matchup Analysis</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Barlow+Condensed:wght@400;600;700&display=swap" rel="stylesheet"/>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;}
+body{background:#0b0f0e;color:#e8ede9;font-family:'Inter',sans-serif;overflow:hidden;}
+::-webkit-scrollbar{width:5px;height:5px;}
+::-webkit-scrollbar-track{background:#0b0f0e;}
+::-webkit-scrollbar-thumb{background:#1c2b22;border-radius:3px;}
+.game-btn:hover{border-color:#4ade80!important;background:#111a13!important;}
+.row-hover:hover{background:#111a13!important;}
+select{background:#131a14;color:#e8ede9;border:1px solid #1c2b22;border-radius:4px;padding:5px 8px;font-family:'Inter',sans-serif;font-size:11px;outline:none;cursor:pointer;}
+select:hover{border-color:#4ade80;}
+@media (max-width:820px){.gx-shell{flex-direction:column!important;}.gx-side{width:100%!important;max-height:190px;border-right:none!important;border-bottom:1px solid #1c2b22;}}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useMemo, useRef } = React;
+
+/* ------------------------------------------------------------------ *
+ * Gridiron Edge — NFL matchup analysis
+ * Apollo Media. Data: ESPN public APIs (no key required).
+ *
+ * Endpoint notes (all verified returning real data):
+ *   scoreboard  site.api.espn.com/apis/site/v2/.../scoreboard?seasontype&week&dates
+ *   standings   site.api.espn.com/apis/v2/sports/football/nfl/standings?season=
+ *   team+roster site.api.espn.com/apis/site/v2/.../teams/{id}?enable=roster
+ *   athlete     site.web.api.espn.com/apis/common/v3/.../athletes/{id}/stats
+ *   team stats  sports.core.api.espn.com/v2/.../seasons/{y}/types/2/teams/{id}/statistics
+ *   summary     site.api.espn.com/apis/site/v2/.../summary?event={id}  (weather + injuries)
+ *
+ * VERIFIED TRAPS — do not "fix" these back:
+ *   - team.athletes from ?enable=roster is a FLAT array of athletes,
+ *     NOT groups with .items. Iterating group.items yields zero players.
+ *   - athlete stats live at json.categories[].statistics[], each entry a
+ *     SEASON whose .stats array is positionally parallel to category .names.
+ *     There is no json.splits.categories[].stats.
+ *   - core team "defensive" category exposes yardsAllowed and pointsAllowed
+ *     but both return 0 for all 32 teams while responding HTTP 200.
+ *     Real points-allowed comes from the standings endpoint instead.
+ *   - the /teams list endpoint is NOT CORS-open; it fails from file://.
+ *     Team id/abbr map is built from standings.
+ *   - weather lives at summary.gameInfo.weather and has temperature +
+ *     gust, but NO windSpeed field.
+ * ------------------------------------------------------------------ */
+
+const ESPN      = "https://site.api.espn.com/apis/site/v2/sports/football/nfl";
+const ESPN_V2   = "https://site.api.espn.com/apis/v2/sports/football/nfl";
+const ESPN_WEB  = "https://site.web.api.espn.com/apis/common/v3/sports/football/nfl";
+const ESPN_CORE = "https://sports.core.api.espn.com/v2/sports/football/leagues/nfl";
+
+const C = {
+  bg: "#0b0f0e", panel: "#0f1510", card: "#131a14", border: "#1c2b22",
+  green: "#4ade80", greenSoft: "#86efac", red: "#f87171", redSoft: "#fca5a5",
+  yellow: "#fbbf24", blue: "#60a5fa", muted: "#4b6355", text: "#e8ede9", sub: "#7a9b83",
+};
+
+/* NFL divisions are stable; hardcoded so the divisional flag never depends
+   on a standings grouping level that may or may not be returned. */
+const DIVISION = {
+  BUF:"AFC East", MIA:"AFC East", NE:"AFC East", NYJ:"AFC East",
+  BAL:"AFC North", CIN:"AFC North", CLE:"AFC North", PIT:"AFC North",
+  HOU:"AFC South", IND:"AFC South", JAX:"AFC South", TEN:"AFC South",
+  DEN:"AFC West", KC:"AFC West", LV:"AFC West", LAC:"AFC West",
+  DAL:"NFC East", NYG:"NFC East", PHI:"NFC East", WSH:"NFC East",
+  CHI:"NFC North", DET:"NFC North", GB:"NFC North", MIN:"NFC North",
+  ATL:"NFC South", CAR:"NFC South", NO:"NFC South", TB:"NFC South",
+  ARI:"NFC West", LAR:"NFC West", SEA:"NFC West", SF:"NFC West",
+};
+
+/* ----------------------------- utilities ----------------------------- */
+
+const _cache = new Map();
+async function fetchJSON(url) {
+  if (_cache.has(url)) return _cache.get(url);
+  const p = (async () => {
+    const r = await fetch(url);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return r.json();
+  })();
+  _cache.set(url, p);
+  p.catch(() => _cache.delete(url));
+  return p;
+}
+
+async function safeJSON(url) { try { return await fetchJSON(url); } catch { return null; } }
+
+/** Run async fn over items with bounded concurrency. */
+async function pool(items, limit, fn) {
+  const out = new Array(items.length);
+  let i = 0;
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (i < items.length) { const idx = i++; out[idx] = await fn(items[idx], idx); }
+  }));
+  return out;
+}
+
+/** ESPN returns display strings like "2,267" and "—". */
+function num(v) {
+  if (v === null || v === undefined) return NaN;
+  const n = parseFloat(String(v).replace(/,/g, ""));
+  return isNaN(n) ? NaN : n;
+}
+const fmt = (v, d = 1) => (isNaN(num(v)) ? "—" : num(v).toFixed(d));
+const int = (v) => (isNaN(num(v)) ? "—" : String(Math.round(num(v))));
+
+function ordinal(n) {
+  if (!n || isNaN(n)) return "—";
+  const s = ["th", "st", "nd", "rd"], v = n % 100;
+  return n + (s[(v - 20) % 10] || s[v] || s[0]);
+}
+
+/* ------------------------------ grading ------------------------------ */
+/* thresholds = [elite, good, avg, bad]; returns elite|good|avg|bad|poor */
+function grade(val, thresholds, higherIsBetter = true) {
+  const v = num(val);
+  if (isNaN(v)) return null;
+  const [elite, good, avg, bad] = thresholds;
+  if (higherIsBetter) {
+    if (v >= elite) return "elite";
+    if (v >= good) return "good";
+    if (v >= avg) return "avg";
+    if (v >= bad) return "bad";
+    return "poor";
+  }
+  if (v <= elite) return "elite";
+  if (v <= good) return "good";
+  if (v <= avg) return "avg";
+  if (v <= bad) return "bad";
+  return "poor";
+}
+const GRADE_COLOR = { elite: C.green, good: C.greenSoft, avg: C.text, bad: C.redSoft, poor: C.red };
+const gradeColor = (g) => (g ? GRADE_COLOR[g] : C.sub);
+const GRADE_SCORE = { elite: 1, good: 0.75, avg: 0.5, bad: 0.25, poor: 0 };
+
+/* --------------------------- data: schedule --------------------------- */
+
+async function getSchedule(year, week, seasonType) {
+  const d = await fetchJSON(`${ESPN}/scoreboard?seasontype=${seasonType}&week=${week}&dates=${year}`);
+  const games = (d.events || []).map((ev) => {
+    const comp = ev.competitions?.[0] || {};
+    const home = (comp.competitors || []).find((c) => c.homeAway === "home") || {};
+    const away = (comp.competitors || []).find((c) => c.homeAway === "away") || {};
+    const side = (c) => ({
+      id: c.team?.id, abbr: c.team?.abbreviation, name: c.team?.displayName,
+      logo: c.team?.logo, score: c.score, record: (c.records || [])[0]?.summary,
+    });
+    return {
+      id: ev.id, name: ev.shortName || ev.name, date: ev.date,
+      status: comp.status?.type?.description,
+      state: comp.status?.type?.state,
+      venue: comp.venue?.fullName,
+      indoor: comp.venue?.indoor,
+      weather: comp.weather || null,
+      home: side(home), away: side(away),
+    };
+  });
+  games.sort((a, b) => new Date(a.date) - new Date(b.date));
+  return { games, byes: (d.week?.teamsOnBye || []).map((t) => t.abbreviation) };
+}
+
+/* ------------------ data: league-wide defensive context ------------------ */
+/* Points allowed comes from standings (real). Pressure/coverage/run-stuff
+   proxies come from core team statistics. Everything is converted to a
+   league rank 1-32 where 1 = toughest defense. */
+
+function walkStandings(node, out = []) {
+  if (!node) return out;
+  if (node.standings?.entries) out.push(...node.standings.entries);
+  (node.children || []).forEach((c) => walkStandings(c, out));
+  return out;
+}
+
+async function getStandings(year) {
+  const d = await safeJSON(`${ESPN_V2}/standings?season=${year}`);
+  if (!d) return [];
+  return walkStandings(d).map((e) => {
+    const s = {};
+    (e.stats || []).forEach((x) => { s[x.name] = x.value !== undefined ? x.value : num(x.displayValue); });
+    const gp = (s.wins || 0) + (s.losses || 0) + (s.ties || 0);
+    return {
+      id: e.team?.id, abbr: e.team?.abbreviation, name: e.team?.displayName,
+      wins: s.wins, losses: s.losses, ties: s.ties, gp,
+      pointsAgainst: s.pointsAgainst, pointsFor: s.pointsFor,
+      record: [s.wins, s.losses].filter((v) => v !== undefined).join("-") + (s.ties ? "-" + s.ties : ""),
+    };
+  }).filter((t) => t.abbr);
+}
+
+async function getTeamDefStats(year, teamId) {
+  const d = await safeJSON(`${ESPN_CORE}/seasons/${year}/types/2/teams/${teamId}/statistics`);
+  const cat = d?.splits?.categories?.find((c) => c.name === "defensive");
+  const g = (n) => {
+    const s = (cat?.stats || []).find((x) => x.name === n);
+    return s ? num(s.value ?? s.displayValue) : NaN;
+  };
+  return {
+    sacks: g("sacks"), passesDefended: g("passesDefended"),
+    stuffs: g("stuffs"), tacklesForLoss: g("tacklesForLoss"),
+    gp: g("teamGamesPlayed"),
+  };
+}
+
+/** Rank map: higher raw value = better defense unless invert. 1 = best. */
+function rankBy(rows, key, higherIsBetter) {
+  const valid = rows.filter((r) => !isNaN(r[key]));
+  const sorted = [...valid].sort((a, b) => (higherIsBetter ? b[key] - a[key] : a[key] - b[key]));
+  const map = {};
+  sorted.forEach((r, i) => { map[r.abbr] = i + 1; });
+  return map;
+}
+
+/**
+ * Is this season far enough along for defensive ranks to mean anything?
+ * Week 1 is the trap: a Thursday opener leaves 2 teams with a game played and
+ * 30 with none, so "any games played" is not a usable test. Requires the median
+ * team to have 4+ games, otherwise the sample is noise and we use last season.
+ */
+function seasonHasSample(standings) {
+  if (!standings.length) return false;
+  const gps = standings.map((t) => t.gp || 0).sort((a, b) => a - b);
+  return gps[Math.floor(gps.length / 2)] >= 4;
+}
+
+/**
+ * Builds the league defense table. Tries `year`; if that season hasn't played
+ * enough football yet, falls back to the prior season so the tool shows real
+ * ranks instead of a table where 30 teams are tied at zero.
+ */
+async function getLeagueDefense(year) {
+  let season = year;
+  let standings = await getStandings(season);
+  if (!seasonHasSample(standings)) {
+    const prior = await getStandings(year - 1);
+    if (seasonHasSample(prior)) { season = year - 1; standings = prior; }
+  }
+  if (!standings.length) return null;
+
+  const stats = await pool(standings, 8, (t) => getTeamDefStats(season, t.id));
+  const rows = standings.map((t, i) => {
+    const s = stats[i] || {};
+    const gp = t.gp || s.gp || 1;
+    return {
+      abbr: t.abbr, name: t.name, record: t.record, gp,
+      papg: t.pointsAgainst ? t.pointsAgainst / gp : NaN,
+      sacksPg: isNaN(s.sacks) ? NaN : s.sacks / gp,
+      pdPg: isNaN(s.passesDefended) ? NaN : s.passesDefended / gp,
+      stuffsPg: isNaN(s.stuffs) ? NaN : s.stuffs / gp,
+      tflPg: isNaN(s.tacklesForLoss) ? NaN : s.tacklesForLoss / gp,
+    };
+  });
+
+  const rPapg   = rankBy(rows, "papg", false);   // fewer points allowed = better
+  const rSacks  = rankBy(rows, "sacksPg", true);
+  const rPd     = rankBy(rows, "pdPg", true);
+  const rStuffs = rankBy(rows, "stuffsPg", true);
+  const rTfl    = rankBy(rows, "tflPg", true);
+
+  // Composite pass / run defense scores, then re-ranked 1-32.
+  const withComposite = rows.map((r) => ({
+    ...r,
+    _pass: ((rSacks[r.abbr] || 16) + (rPd[r.abbr] || 16) + (rPapg[r.abbr] || 16)) / 3,
+    _run:  ((rStuffs[r.abbr] || 16) + (rTfl[r.abbr] || 16) + (rPapg[r.abbr] || 16)) / 3,
+  }));
+  const rPass = rankBy(withComposite, "_pass", false);
+  const rRun  = rankBy(withComposite, "_run", false);
+
+  const table = {};
+  withComposite.forEach((r) => {
+    table[r.abbr] = {
+      ...r,
+      rankPapg: rPapg[r.abbr], rankSacks: rSacks[r.abbr], rankPd: rPd[r.abbr],
+      rankStuffs: rStuffs[r.abbr], rankTfl: rTfl[r.abbr],
+      rankPass: rPass[r.abbr], rankRun: rRun[r.abbr],
+    };
+  });
+  return { season, table, teams: standings.length };
+}
+
+/* --------------------------- data: rosters --------------------------- */
+
+async function getRoster(teamId) {
+  const d = await safeJSON(`${ESPN}/teams/${teamId}?enable=roster`);
+  // NOTE: flat array of athletes, not position groups.
+  const athletes = d?.team?.athletes || [];
+  return athletes.map((a) => ({
+    id: a.id, name: a.displayName, jersey: a.jersey,
+    pos: a.position?.abbreviation, active: a.active !== false,
+  })).filter((a) => a.id && a.pos);
+}
+
+/* ------------------------ data: athlete season stats ------------------------ */
+
+async function getAthleteSeason(playerId) {
+  const d = await safeJSON(`${ESPN_WEB}/athletes/${playerId}/stats`);
+  if (!d?.categories) return null;
+  const out = { season: null };
+  for (const cat of d.categories) {
+    const names = cat.names || [];
+    const seasons = cat.statistics || [];
+    if (!names.length || !seasons.length) continue;
+    let latest = null;
+    for (const s of seasons) {
+      const y = s?.season?.year;
+      if (y != null && (!latest || y > latest.season.year)) latest = s;
+    }
+    if (!latest) continue;
+    const vals = {};
+    names.forEach((n, i) => { vals[n] = latest.stats?.[i]; });
+    out[cat.name] = vals;
+    if (!out.season || latest.season.year > out.season) out.season = latest.season.year;
+  }
+  return out.season ? out : null;
+}
+
+/* --------------------------- data: game detail --------------------------- */
+
+async function getGameDetail(eventId) {
+  const d = await safeJSON(`${ESPN}/summary?event=${eventId}`);
+  if (!d) return null;
+  const w = d.gameInfo?.weather || null;
+  const injuries = {};
+  (Array.isArray(d.injuries) ? d.injuries : []).forEach((block) => {
+    const ab = block.team?.abbreviation;
+    if (!ab) return;
+    injuries[ab] = (block.injuries || []).map((x) => ({
+      name: x.athlete?.displayName,
+      pos: x.athlete?.position?.abbreviation,
+      status: x.status,
+      detail: x.details?.type || x.type?.description || "",
+    }));
+  });
+  return {
+    // NOTE: no windSpeed field on this payload — gust is the wind proxy.
+    weather: w ? { temp: w.temperature ?? w.highTemperature, gust: w.gust, conditionId: w.conditionId } : null,
+    indoor: d.gameInfo?.venue?.indoor,
+    injuries,
+  };
+}
+
+/* ------------------------- matchup edge scoring ------------------------- */
+/**
+ * edge 0-100. 60% player production grade, 40% how exploitable the opposing
+ * defense is by league rank. Deliberately transparent: both inputs are shown
+ * in the UI so a bad component is visible rather than buried in one number.
+ */
+function edgeScore(playerGrades, defRank, teams = 32) {
+  const gs = playerGrades.filter(Boolean).map((g) => GRADE_SCORE[g]);
+  if (!gs.length) return null;
+  const player = gs.reduce((a, b) => a + b, 0) / gs.length;
+  const softness = defRank ? (defRank - 1) / Math.max(1, teams - 1) : 0.5;
+  return Math.round((player * 0.6 + softness * 0.4) * 100);
+}
+
+function edgeVerdict(score) {
+  if (score === null) return { label: "No data", tone: "neutral" };
+  if (score >= 72) return { label: "Smash spot", tone: "hot" };
+  if (score >= 58) return { label: "Lean", tone: "warm" };
+  if (score >= 42) return { label: "Neutral", tone: "neutral" };
+  if (score >= 28) return { label: "Soft fade", tone: "cool" };
+  return { label: "Fade", tone: "cold" };
+}
+
+/* ------------------------------ components ------------------------------ */
+
+const TONES = {
+  hot:     { bg: "rgba(74,222,128,0.13)", bd: "rgba(74,222,128,0.4)",  fg: C.green,   icon: "🔥" },
+  warm:    { bg: "rgba(134,239,172,0.10)", bd: "rgba(134,239,172,0.3)", fg: C.greenSoft, icon: "↗" },
+  neutral: { bg: "rgba(255,255,255,0.04)", bd: C.border,                fg: C.sub,     icon: "—" },
+  cool:    { bg: "rgba(252,165,165,0.10)", bd: "rgba(252,165,165,0.3)", fg: C.redSoft, icon: "↘" },
+  cold:    { bg: "rgba(248,113,113,0.13)", bd: "rgba(248,113,113,0.4)", fg: C.red,     icon: "🧊" },
+  info:    { bg: "rgba(96,165,250,0.10)",  bd: "rgba(96,165,250,0.3)",  fg: C.blue,    icon: "ⓘ" },
+};
+
+function Badge({ label, tone = "neutral", icon }) {
+  const t = TONES[tone] || TONES.neutral;
+  return (
+    <span style={{
+      display: "inline-flex", alignItems: "center", gap: 5, background: t.bg,
+      border: `1px solid ${t.bd}`, borderRadius: 4, padding: "3px 8px",
+      fontSize: 10, color: t.fg, whiteSpace: "nowrap",
+    }}>
+      {icon !== null && <span>{icon || t.icon}</span>} {label}
+    </span>
+  );
+}
+
+function Stat({ label, value, g, note }) {
+  return (
+    <td style={{ padding: "9px 8px", textAlign: "center", minWidth: 56 }}>
+      <div style={{
+        fontFamily: "'Barlow Condensed',sans-serif", fontSize: 17, fontWeight: 600,
+        letterSpacing: 0.5, color: gradeColor(g),
+      }}>{value}</div>
+      <div style={{ fontSize: 9, color: C.muted, marginTop: 1, letterSpacing: 0.2 }}>
+        {label}{note ? ` ${note}` : ""}
+      </div>
+    </td>
+  );
+}
+
+function DefenseCard({ def, defAbbr, season }) {
+  if (!def) return null;
+  const rankTone = (r) => (r <= 10 ? "cold" : r >= 23 ? "hot" : "neutral");
+  const item = (label, rank, val) => (
+    <div style={{ minWidth: 92 }}>
+      <div style={{ fontSize: 9, color: C.muted, letterSpacing: 0.4, marginBottom: 3 }}>{label}</div>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+        <span style={{
+          fontFamily: "'Barlow Condensed',sans-serif", fontSize: 19, fontWeight: 700,
+          color: rank <= 10 ? C.red : rank >= 23 ? C.green : C.text,
+        }}>{ordinal(rank)}</span>
+        <span style={{ fontSize: 10, color: C.sub }}>{val}</span>
+      </div>
+    </div>
+  );
+  return (
+    <div style={{
+      background: C.card, border: `1px solid ${C.border}`, borderRadius: 6,
+      padding: "11px 14px", marginBottom: 16,
+    }}>
+      <div style={{ fontSize: 10, color: C.muted, letterSpacing: 0.6, marginBottom: 9 }}>
+        {defAbbr} DEFENSE · {season} SEASON RANKS <span style={{ color: C.sub }}>(1 = toughest, 32 = softest)</span>
+      </div>
+      <div style={{ display: "flex", gap: 22, flexWrap: "wrap" }}>
+        {item("PTS ALLOWED", def.rankPapg, isNaN(def.papg) ? "—" : def.papg.toFixed(1) + "/g")}
+        {item("PASS D", def.rankPass, isNaN(def.sacksPg) ? "—" : def.sacksPg.toFixed(1) + " sk/g")}
+        {item("RUN D", def.rankRun, isNaN(def.stuffsPg) ? "—" : def.stuffsPg.toFixed(1) + " stuff/g")}
+        {item("COVERAGE", def.rankPd, isNaN(def.pdPg) ? "—" : def.pdPg.toFixed(1) + " PD/g")}
+        {item("PRESSURE", def.rankSacks, isNaN(def.tflPg) ? "—" : def.tflPg.toFixed(1) + " TFL/g")}
+      </div>
+      <div style={{ fontSize: 9, color: C.muted, marginTop: 9, lineHeight: 1.5 }}>
+        Points allowed is total defense, not split by pass/rush. Pass D and Run D are composites of
+        sack, coverage and run-stuff rates — directional, not DVOA.
+      </div>
+    </div>
+  );
+}
+
+function PlayerRow({ p, defAbbr, defRank, type, teams }) {
+  const s = p.stats || {};
+  const passing = s.passing || {}, rushing = s.rushing || {}, receiving = s.receiving || {};
+  let cells = [], grades = [];
+
+  if (type === "QB") {
+    const rtg = passing.QBRating, ypa = passing.yardsPerPassAttempt,
+          cmp = passing.completionPct, td = passing.passingTouchdowns,
+          ints = passing.interceptions, att = passing.passingAttempts,
+          yds = passing.passingYards, gp = passing.gamesPlayed;
+    const g1 = grade(rtg, [100, 90, 80, 70]), g2 = grade(ypa, [8.2, 7.4, 6.7, 6.0]),
+          g3 = grade(cmp, [68, 64, 60, 56]);
+    const tdPct = num(att) ? (num(td) / num(att)) * 100 : NaN;
+    const intPct = num(att) ? (num(ints) / num(att)) * 100 : NaN;
+    const g4 = grade(tdPct, [6, 4.8, 3.8, 2.8]), g5 = grade(intPct, [1.4, 2, 2.6, 3.2], false);
+    grades = [g1, g2, g3, g4, g5];
+    cells = [
+      { label: "RTG", value: fmt(rtg), g: g1 },
+      { label: "YPA", value: fmt(ypa), g: g2 },
+      { label: "CMP%", value: isNaN(num(cmp)) ? "—" : fmt(cmp) + "%", g: g3 },
+      { label: "TD%", value: isNaN(tdPct) ? "—" : tdPct.toFixed(1) + "%", g: g4 },
+      { label: "INT%", value: isNaN(intPct) ? "—" : intPct.toFixed(1) + "%", g: g5 },
+      { label: "YDS", value: int(yds), note: gp ? `(${int(gp)}g)` : "" },
+    ];
+  } else if (type === "WR") {
+    const rec = receiving.receptions, yds = receiving.receivingYards,
+          ypr = receiving.yardsPerReception, tgt = receiving.receivingTargets,
+          td = receiving.receivingTouchdowns, gp = receiving.gamesPlayed;
+    const ypg = num(gp) ? num(yds) / num(gp) : NaN;
+    const tpg = num(gp) ? num(tgt) / num(gp) : NaN;
+    const g1 = grade(ypg, [75, 58, 42, 28]), g2 = grade(tpg, [8.5, 6.5, 4.5, 3]),
+          g3 = grade(ypr, [14.5, 12.5, 10.5, 8.5]);
+    grades = [g1, g2, g3];
+    cells = [
+      { label: "YDS/G", value: fmt(ypg), g: g1 },
+      { label: "TGT/G", value: fmt(tpg), g: g2 },
+      { label: "YPR", value: fmt(ypr), g: g3 },
+      { label: "REC", value: int(rec) },
+      { label: "TD", value: int(td) },
+      { label: "YDS", value: int(yds), note: gp ? `(${int(gp)}g)` : "" },
+    ];
+  } else {
+    const car = rushing.rushingAttempts, yds = rushing.rushingYards,
+          ypc = rushing.yardsPerRushAttempt, td = rushing.rushingTouchdowns,
+          gp = rushing.gamesPlayed, rec = receiving.receptions;
+    const ypg = num(gp) ? num(yds) / num(gp) : NaN;
+    const cpg = num(gp) ? num(car) / num(gp) : NaN;
+    const g1 = grade(ypg, [90, 70, 50, 32]), g2 = grade(cpg, [18, 14, 10, 6]),
+          g3 = grade(ypc, [5, 4.5, 4.1, 3.7]);
+    grades = [g1, g2, g3];
+    cells = [
+      { label: "YDS/G", value: fmt(ypg), g: g1 },
+      { label: "CAR/G", value: fmt(cpg), g: g2 },
+      { label: "YPC", value: fmt(ypc), g: g3 },
+      { label: "TD", value: int(td) },
+      { label: "REC", value: int(rec), note: "rec" },
+      { label: "YDS", value: int(yds), note: gp ? `(${int(gp)}g)` : "" },
+    ];
+  }
+
+  const score = edgeScore(grades, defRank, teams);
+  const verdict = edgeVerdict(score);
+
+  return (
+    <tr className="row-hover" style={{ borderBottom: `1px solid ${C.border}`, transition: "background .1s" }}>
+      <td style={{ padding: "9px 14px", minWidth: 155 }}>
+        <div style={{ fontWeight: 500, fontSize: 13, display: "flex", alignItems: "center", gap: 6 }}>
+          {p.name}
+          {p.injury && <span title={p.injury.detail} style={{
+            fontSize: 9, color: C.yellow, border: `1px solid rgba(251,191,36,.35)`,
+            borderRadius: 3, padding: "1px 4px",
+          }}>{p.injury.status}</span>}
+        </div>
+        <div style={{ fontSize: 10, color: C.muted, marginTop: 2 }}>
+          {p.pos} · vs {defAbbr} {type === "RB" ? "run D" : type === "QB" ? "pass D" : "secondary"}
+          {p.stats?.season ? ` · ${p.stats.season}` : ""}
+        </div>
+      </td>
+      {cells.map((c, i) => <Stat key={i} {...c} />)}
+      <td style={{ padding: "9px 12px", minWidth: 132 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{
+            fontFamily: "'Barlow Condensed',sans-serif", fontSize: 20, fontWeight: 700,
+            color: TONES[verdict.tone].fg, minWidth: 26,
+          }}>{score === null ? "—" : score}</span>
+          <Badge label={verdict.label} tone={verdict.tone} />
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+function Section({ title, icon, players, defAbbr, defRank, type, teams, loading }) {
+  return (
+    <div style={{ marginBottom: 20 }}>
+      <div style={{
+        fontSize: 11, fontWeight: 600, color: C.muted, marginBottom: 9,
+        letterSpacing: 0.6, display: "flex", alignItems: "center", gap: 6,
+      }}>
+        {icon} {title.toUpperCase()}
+        {defRank && <span style={{ color: C.sub, fontWeight: 400 }}>
+          · {defAbbr} ranks {ordinal(defRank)} of {teams}
+        </span>}
+      </div>
+      <div style={{ border: `1px solid ${C.border}`, borderRadius: 6, overflow: "hidden", overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <tbody>
+            {loading && (
+              <tr><td style={{ padding: "14px", color: C.muted, fontSize: 12 }}>Loading player stats…</td></tr>
+            )}
+            {!loading && !players.length && (
+              <tr><td style={{ padding: "14px", color: C.muted, fontSize: 12 }}>No qualifying players found.</td></tr>
+            )}
+            {!loading && players.map((p) => (
+              <PlayerRow key={p.id} p={p} defAbbr={defAbbr} defRank={defRank} type={type} teams={teams} />
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function GameView({ game, league, byes }) {
+  const [side, setSide] = useState("home");
+  const [detail, setDetail] = useState(null);
+  const [players, setPlayers] = useState({ QB: [], WR: [], RB: [] });
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState(null);
+  const reqId = useRef(0);
+
+  const off = side === "home" ? game.home : game.away;
+  const def = side === "home" ? game.away : game.home;
+  const defRow = league?.table?.[def.abbr];
+  const teams = league?.teams || 32;
+
+  useEffect(() => { getGameDetail(game.id).then(setDetail); }, [game.id]);
+
+  useEffect(() => {
+    const my = ++reqId.current;
+    setLoading(true); setErr(null); setPlayers({ QB: [], WR: [], RB: [] });
+
+    (async () => {
+      try {
+        const roster = await getRoster(off.id);
+        if (!roster.length) throw new Error("roster unavailable");
+        const want = roster.filter((p) => ["QB", "RB", "FB", "WR", "TE"].includes(p.pos));
+        const stats = await pool(want, 8, (p) => getAthleteSeason(p.id));
+        if (my !== reqId.current) return;
+
+        const inj = detail?.injuries?.[off.abbr] || [];
+        const withStats = want.map((p, i) => ({
+          ...p, stats: stats[i],
+          injury: inj.find((x) => x.name === p.name) || null,
+        })).filter((p) => p.stats);
+
+        const vol = (p, cat, key) => num(p.stats?.[cat]?.[key]) || 0;
+        const qbs = withStats.filter((p) => p.pos === "QB")
+          .sort((a, b) => vol(b, "passing", "passingAttempts") - vol(a, "passing", "passingAttempts"))
+          .slice(0, 2);
+        const pass = withStats.filter((p) => ["WR", "TE"].includes(p.pos))
+          .sort((a, b) => vol(b, "receiving", "receivingYards") - vol(a, "receiving", "receivingYards"))
+          .slice(0, 5);
+        const rbs = withStats.filter((p) => ["RB", "FB"].includes(p.pos))
+          .sort((a, b) => vol(b, "rushing", "rushingAttempts") - vol(a, "rushing", "rushingAttempts"))
+          .slice(0, 3);
+
+        setPlayers({ QB: qbs, WR: pass, RB: rbs });
+        setLoading(false);
+      } catch (e) {
+        if (my !== reqId.current) return;
+        setErr(e.message); setLoading(false);
+      }
+    })();
+  }, [game.id, side, off.id, detail]);
+
+  const when = useMemo(() => {
+    const d = new Date(game.date);
+    return d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })
+      + " · " + d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+  }, [game.date]);
+
+  const wx = detail?.weather;
+  const temp = num(wx?.temp), gust = num(wx?.gust);
+  const indoor = game.indoor || detail?.indoor;
+  const divisional = DIVISION[game.home.abbr] && DIVISION[game.home.abbr] === DIVISION[game.away.abbr];
+  const injCount = (detail?.injuries?.[off.abbr] || []).length;
+
+  return (
+    <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
+      <div style={{ flexShrink: 0, marginBottom: 14 }}>
+        <div style={{
+          fontFamily: "'Barlow Condensed',sans-serif", fontSize: 30, fontWeight: 700,
+          letterSpacing: 1, lineHeight: 1.1,
+        }}>
+          {game.away.abbr} <span style={{ color: C.muted, fontSize: 20, fontWeight: 400 }}>at</span> {game.home.abbr}
+        </div>
+        <div style={{ fontSize: 12, color: C.sub, marginTop: 4 }}>
+          {when} · {game.venue || "TBD"}
+          {game.away.record && ` · ${game.away.abbr} ${game.away.record}, ${game.home.abbr} ${game.home.record || ""}`}
+        </div>
+        <div style={{ display: "flex", gap: 7, marginTop: 9, flexWrap: "wrap" }}>
+          {!indoor && !isNaN(gust) && gust >= 15 &&
+            <Badge label={`Wind gusts ${Math.round(gust)} mph — passing/kicking suppressed`} tone="cold" />}
+          {!indoor && !isNaN(temp) && temp < 35 &&
+            <Badge label={`${Math.round(temp)}°F — cold weather game`} tone="cold" />}
+          {!indoor && !isNaN(temp) && temp >= 35 && (isNaN(gust) || gust < 15) &&
+            <Badge label={`${Math.round(temp)}°F${isNaN(gust) ? "" : `, gusts ${Math.round(gust)} mph`}`} tone="neutral" icon="🌤" />}
+          {indoor && <Badge label="Indoor — no weather factor" tone="info" />}
+          {divisional && <Badge label={`Divisional (${DIVISION[game.home.abbr]}) — trends under`} tone="info" />}
+          {game.state && game.state !== "pre" && <Badge label={game.status} tone="neutral" />}
+        </div>
+      </div>
+
+      <div style={{ display: "flex", gap: 8, marginBottom: 14, flexShrink: 0, flexWrap: "wrap" }}>
+        {[["away", game.away, game.home], ["home", game.home, game.away]].map(([s, o, d]) => (
+          <button key={s} onClick={() => setSide(s)} style={{
+            padding: "7px 14px", fontSize: 12, fontWeight: 600, borderRadius: 4, cursor: "pointer",
+            background: side === s ? C.green : C.card, color: side === s ? C.bg : C.text,
+            border: `1px solid ${side === s ? C.green : C.border}`,
+            fontFamily: "'Barlow Condensed',sans-serif", letterSpacing: 0.5,
+          }}>
+            {o.name} <span style={{ opacity: 0.65, fontSize: 10 }}>offense vs {d.abbr} D</span>
+          </button>
+        ))}
+      </div>
+
+      <div style={{ flex: 1, overflowY: "auto", paddingRight: 4 }}>
+        <DefenseCard def={defRow} defAbbr={def.abbr} season={league?.season} />
+
+        {injCount > 0 && (
+          <div style={{
+            background: C.card, border: `1px solid ${C.border}`, borderRadius: 6,
+            padding: "10px 14px", marginBottom: 16,
+          }}>
+            <div style={{ fontSize: 10, color: C.muted, letterSpacing: 0.6, marginBottom: 7 }}>
+              {off.abbr} INJURY REPORT
+            </div>
+            <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
+              {(detail.injuries[off.abbr] || []).slice(0, 10).map((x, i) => (
+                <Badge key={i} tone={/out|doubtful/i.test(x.status) ? "cold" : "neutral"} icon={null}
+                  label={`${x.name}${x.pos ? ` (${x.pos})` : ""} — ${x.status}`} />
+              ))}
+            </div>
+          </div>
+        )}
+
+        {err && <div style={{ color: C.red, fontSize: 12, padding: "10px 0" }}>Could not load: {err}</div>}
+
+        <Section title="QB vs pass defense" icon="🎯" players={players.QB} defAbbr={def.abbr}
+          defRank={defRow?.rankPass} type="QB" teams={teams} loading={loading} />
+        <Section title="WR / TE vs secondary" icon="⚡" players={players.WR} defAbbr={def.abbr}
+          defRank={defRow?.rankPass} type="WR" teams={teams} loading={loading} />
+        <Section title="RB vs run defense" icon="🏃" players={players.RB} defAbbr={def.abbr}
+          defRank={defRow?.rankRun} type="RB" teams={teams} loading={loading} />
+
+        <div style={{ fontSize: 10, color: C.muted, lineHeight: 1.6, paddingBottom: 20 }}>
+          EDGE = 60% player production grade + 40% opposing defense softness by league rank.
+          Player stats are full-season totals{players.QB[0]?.stats?.season ? ` (${players.QB[0].stats.season})` : ""};
+          early in a new season ESPN still reports the prior year. Always price against your book's actual line.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function App() {
+  const now = new Date();
+  const defaultYear = now.getMonth() < 2 ? now.getFullYear() - 1 : now.getFullYear();
+  const [year, setYear] = useState(defaultYear);
+  const [seasonType, setSeasonType] = useState(2);
+  const [week, setWeek] = useState(null);
+  const [sched, setSched] = useState({ games: [], byes: [] });
+  const [selected, setSelected] = useState(null);
+  const [league, setLeague] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  // Discover the current week once from the unparameterized scoreboard.
+  useEffect(() => {
+    (async () => {
+      const d = await safeJSON(`${ESPN}/scoreboard`);
+      setWeek(d?.week?.number || 1);
+      if (d?.season?.year) setYear(d.season.year);
+      if (d?.season?.type) setSeasonType(d.season.type);
+    })();
+  }, []);
+
+  useEffect(() => { getLeagueDefense(defaultYear).then(setLeague); }, [defaultYear]);
+
+  useEffect(() => {
+    if (!week) return;
+    setLoading(true); setError(null); setSelected(null);
+    getSchedule(year, week, seasonType)
+      .then((s) => { setSched(s); setLoading(false); })
+      .catch((e) => { setError(e.message); setLoading(false); });
+  }, [year, week, seasonType]);
+
+  const weeks = seasonType === 2 ? 18 : 5;
+
+  return (
+    <div style={{
+      fontFamily: "'Inter',sans-serif", background: C.bg, height: "100vh",
+      color: C.text, display: "flex", flexDirection: "column",
+    }}>
+      <div style={{
+        borderBottom: `1px solid ${C.border}`, padding: "11px 18px", display: "flex",
+        alignItems: "center", gap: 14, background: C.panel, flexShrink: 0, flexWrap: "wrap",
+      }}>
+        <div style={{
+          fontFamily: "'Barlow Condensed',sans-serif", fontSize: 22, fontWeight: 700,
+          letterSpacing: 2, color: C.green,
+        }}>🏈 GRIDIRON EDGE</div>
+        <div style={{ color: C.muted, fontSize: 10, letterSpacing: 1, paddingTop: 2 }}>
+          NFL MATCHUP ANALYSIS · APOLLO MEDIA
+        </div>
+        <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" }}>
+          <select value={seasonType} onChange={(e) => { setSeasonType(+e.target.value); setWeek(1); }}>
+            <option value={2}>Regular season</option>
+            <option value={3}>Postseason</option>
+          </select>
+          <select value={week || 1} onChange={(e) => setWeek(+e.target.value)}>
+            {Array.from({ length: weeks }, (_, i) => i + 1).map((w) =>
+              <option key={w} value={w}>Week {w}</option>)}
+          </select>
+          <select value={year} onChange={(e) => setYear(+e.target.value)}>
+            {[defaultYear, defaultYear - 1, defaultYear - 2].map((y) =>
+              <option key={y} value={y}>{y}</option>)}
+          </select>
+        </div>
+      </div>
+
+      <div className="gx-shell" style={{ display: "flex", flex: 1, overflow: "hidden" }}>
+        <div className="gx-side" style={{
+          width: 218, borderRight: `1px solid ${C.border}`, overflowY: "auto",
+          padding: "10px 0", flexShrink: 0,
+        }}>
+          <div style={{ padding: "0 12px 8px", fontSize: 10, color: C.muted, letterSpacing: 1 }}>
+            {loading ? "LOADING…" : `${sched.games.length} GAMES`}
+          </div>
+          {error && <div style={{ padding: "12px", color: C.red, fontSize: 11 }}>Error: {error}</div>}
+          {sched.games.map((g) => {
+            const sel = selected?.id === g.id;
+            const d = new Date(g.date);
+            return (
+              <button key={g.id} className="game-btn" onClick={() => setSelected(g)} style={{
+                width: "100%", textAlign: "left", background: sel ? "#111a13" : "transparent",
+                border: `1px solid ${sel ? C.green : "transparent"}`, borderRadius: 4,
+                padding: "8px 12px", cursor: "pointer", color: C.text, marginBottom: 1,
+                fontFamily: "'Inter',sans-serif",
+              }}>
+                <div style={{ fontSize: 13, fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}>
+                  {g.away.abbr} <span style={{ color: C.muted, fontSize: 11, fontWeight: 400 }}>at</span> {g.home.abbr}
+                  {g.state === "in" && <span style={{
+                    width: 6, height: 6, borderRadius: "50%", background: C.green, display: "inline-block",
+                  }}/>}
+                </div>
+                <div style={{ fontSize: 10, color: C.muted, marginTop: 2 }}>
+                  {d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}
+                  {" · "}
+                  {d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}
+                </div>
+              </button>
+            );
+          })}
+          {!loading && sched.byes.length > 0 && (
+            <div style={{ padding: "12px", borderTop: `1px solid ${C.border}`, marginTop: 8 }}>
+              <div style={{ fontSize: 9, color: C.muted, letterSpacing: 0.8, marginBottom: 5 }}>ON BYE</div>
+              <div style={{ fontSize: 11, color: C.sub, lineHeight: 1.6 }}>{sched.byes.join(" · ")}</div>
+            </div>
+          )}
+        </div>
+
+        <div style={{ flex: 1, overflowY: "auto", padding: 18 }}>
+          {!selected && !loading && (
+            <div style={{
+              display: "flex", flexDirection: "column", alignItems: "center",
+              justifyContent: "center", height: "100%", gap: 10, textAlign: "center",
+            }}>
+              <div style={{ fontSize: 44 }}>🏈</div>
+              <div style={{
+                fontFamily: "'Barlow Condensed',sans-serif", fontSize: 24, fontWeight: 700,
+                letterSpacing: 2, color: C.muted,
+              }}>SELECT A GAME</div>
+              <div style={{ color: C.muted, fontSize: 12, maxWidth: 320 }}>
+                QB, WR/TE and RB production graded against the opposing defense's league ranks,
+                with weather, injury and divisional context.
+              </div>
+              {!league && <div style={{ color: C.sub, fontSize: 11 }}>Loading league defensive ranks…</div>}
+            </div>
+          )}
+          {selected && <GameView key={selected.id} game={selected} league={league} byes={sched.byes} />}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
