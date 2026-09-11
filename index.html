@@ -17,11 +17,7 @@
   --ink:#f2f7f3; --ink-dim:#b6cdbd; --ink-faint:#7fa38c;
 }
 *{box-sizing:border-box;margin:0;padding:0;}
-body{
-  color:var(--ink); font-family:'Inter',sans-serif; overflow:hidden;
-  background:var(--turf-deep);
-}
-/* Field: alternating mow stripes + 5-yard chalk lines */
+body{color:var(--ink);font-family:'Inter',sans-serif;overflow:hidden;background:var(--turf-deep);}
 .field{
   background-color:var(--turf);
   background-image:
@@ -33,20 +29,19 @@ body{
 ::-webkit-scrollbar-track{background:rgba(0,0,0,.22);}
 ::-webkit-scrollbar-thumb{background:var(--leather);border-radius:5px;border:2px solid rgba(0,0,0,.2);}
 ::-webkit-scrollbar-thumb:hover{background:var(--leather-mid);}
-.game-btn{transition:background .12s,border-color .12s,transform .12s;}
+.game-btn{transition:background .12s,border-color .12s;}
 .game-btn:hover{border-color:var(--gold)!important;background:rgba(255,199,44,.10)!important;}
-.card{transition:box-shadow .15s,transform .15s;}
+.card{transition:box-shadow .15s;}
 .card:hover{box-shadow:0 3px 0 var(--leather-dark),0 10px 22px rgba(0,0,0,.42);}
-select{
-  background:var(--turf-dark);color:var(--ink);border:1px solid var(--chalk-dim);
+.scan-row{transition:background .1s,border-color .1s;cursor:pointer;}
+.scan-row:hover{background:rgba(255,199,44,.10)!important;border-color:var(--gold)!important;}
+select{background:var(--turf-dark);color:var(--ink);border:1px solid var(--chalk-dim);
   border-radius:3px;padding:5px 9px;font-family:'Inter',sans-serif;font-size:11px;
-  font-weight:500;outline:none;cursor:pointer;
-}
+  font-weight:500;outline:none;cursor:pointer;}
 select:hover{border-color:var(--gold);}
-.hash{
-  background-image:repeating-linear-gradient(90deg,var(--chalk-faint) 0 10px,transparent 10px 26px);
-  height:2px;width:100%;
-}
+.hash{background-image:repeating-linear-gradient(90deg,var(--chalk-faint) 0 10px,transparent 10px 26px);height:2px;width:100%;}
+@keyframes pulse{0%,100%{opacity:.45}50%{opacity:1}}
+.pulsing{animation:pulse 1.3s ease-in-out infinite;}
 @media (max-width:860px){
   .gx-shell{flex-direction:column!important;}
   .gx-side{width:100%!important;max-height:184px;border-right:none!important;
@@ -57,7 +52,7 @@ select:hover{border-color:var(--gold);}
 <body>
 <div id="root"></div>
 <script type="text/babel">
-const { useState, useEffect, useMemo, useRef } = React;
+const { useState, useEffect, useMemo, useRef, useCallback } = React;
 
 /* ==================================================================== *
  * Gridiron Edge — NFL matchup analysis · Apollo Media
@@ -65,26 +60,24 @@ const { useState, useEffect, useMemo, useRef } = React;
  *
  * VERIFIED TRAPS — do not "fix" these back:
  *  - team.athletes (?enable=roster) is a FLAT array, not groups with .items
- *  - athlete stats are categories[].statistics[], each entry ONE SEASON whose
- *    .stats array is positionally parallel to the category .names array
+ *  - per-athlete stats are categories[].statistics[], each entry ONE SEASON
+ *    whose .stats array is positionally parallel to the category .names
+ *  - the BULK byathlete endpoint has a DIFFERENT shape: categories[].values
+ *    parallel to a schema in the RESPONSE-level categories[].names
  *  - core "defensive" yardsAllowed / pointsAllowed are 0 for all 32 teams
  *    while returning HTTP 200 — real points allowed comes from standings
  *  - the /teams list endpoint is NOT CORS-open; build the map from standings
  *  - weather has temperature + gust but NO windSpeed field
  *  - Week 1 fallback must test the MEDIAN team's games played, not the sum
- *
- * UNVERIFIED (flagged): defensive athlete stat field names. The team-level
- * feed exposes totalTackles / soloTackles / sacks / passesDefended /
- * tacklesForLoss and a separate defensiveInterceptions category, so the same
- * names are expected on athletes — but that was not probed live. statOf()
- * therefore scans every category for a list of candidate names instead of
- * trusting one, and renders "—" rather than breaking if all miss.
+ *  - interceptions means THROWN picks in `passing` and CAUGHT picks in
+ *    `defensiveinterceptions` — always scope the category before reading it
  * ==================================================================== */
 
 const ESPN      = "https://site.api.espn.com/apis/site/v2/sports/football/nfl";
 const ESPN_V2   = "https://site.api.espn.com/apis/v2/sports/football/nfl";
 const ESPN_WEB  = "https://site.web.api.espn.com/apis/common/v3/sports/football/nfl";
 const ESPN_CORE = "https://sports.core.api.espn.com/v2/sports/football/leagues/nfl";
+const BYATHLETE = `${ESPN_WEB}/statistics/byathlete`;
 
 const T = {
   turf: "#14512f", turfDark: "#0e3b22", turfDeep: "#0a2d1a", turfLight: "#1a6139",
@@ -168,10 +161,30 @@ function grade(val, thresholds, higherIsBetter = true) {
   if (v <= bad) return "bad";
   return "poor";
 }
-/* On a green field, "good = green" reads poorly. Elite is gold, weak is clay. */
 const GRADE_COLOR = { elite: T.gold, good: T.good, avg: T.chalk, bad: T.bad, poor: T.poor };
 const gradeColor = (g) => (g ? GRADE_COLOR[g] : T.inkFaint);
 const GRADE_SCORE = { elite: 1, good: 0.75, avg: 0.5, bad: 0.25, poor: 0 };
+
+/**
+ * Resolve a stat by trying candidate field names across categories, scoped and
+ * case-insensitive: the bulk feed spells it `defensiveinterceptions`, the
+ * per-athlete feed `defensiveInterceptions`.
+ */
+function statOf(stats, categories, candidates) {
+  if (!stats) return undefined;
+  const lower = {};
+  Object.keys(stats).forEach((k) => { lower[k.toLowerCase()] = stats[k]; });
+  for (const cat of categories) {
+    const block = lower[cat.toLowerCase()];
+    if (!block) continue;
+    for (const key of candidates) {
+      if (block[key] !== undefined && block[key] !== null && block[key] !== "") return block[key];
+    }
+  }
+  return undefined;
+}
+const DEF_CATS = ["defensive", "defensiveinterceptions", "general"];
+const defStat = (s, candidates) => statOf(s, DEF_CATS, candidates);
 
 /* --------------------------- schedule --------------------------- */
 
@@ -241,11 +254,7 @@ function rankBy(rows, key, higherIsBetter) {
   return map;
 }
 
-/**
- * Week 1 trap: after a Thursday opener two teams have a game played and thirty
- * have none, so "no games league-wide" never fires and ranks get computed off a
- * two-team sample. Test the MEDIAN team instead.
- */
+/** Week 1 trap: a Thursday opener leaves 2 teams at 1 game and 30 at 0. */
 function seasonHasSample(standings) {
   if (!standings.length) return false;
   const gps = standings.map((t) => t.gp || 0).sort((a, b) => a - b);
@@ -298,7 +307,7 @@ async function getLeagueDefense(year) {
   return { season, table, teams: standings.length };
 }
 
-/* ------------------------------ rosters ------------------------------ */
+/* --------------------------- player sources --------------------------- */
 
 async function getRoster(teamId) {
   const d = await safeJSON(`${ESPN}/teams/${teamId}?enable=roster`);
@@ -309,6 +318,7 @@ async function getRoster(teamId) {
   })).filter((a) => a.id && a.pos);
 }
 
+/** Per-athlete career feed: categories[].statistics[] = one entry per SEASON. */
 async function getAthleteSeason(playerId) {
   const d = await safeJSON(`${ESPN_WEB}/athletes/${playerId}/stats`);
   if (!d?.categories) return null;
@@ -331,24 +341,32 @@ async function getAthleteSeason(playerId) {
 }
 
 /**
- * Resolve a stat by trying candidate field names across the given categories.
- * Category order matters: `interceptions` means thrown picks in `passing` and
- * caught picks in `defensiveInterceptions`, so defenders are scoped to
- * defensive categories only.
+ * BULK feed — the whole league in one request, up to 250 athletes per call.
+ * Different shape from the per-athlete feed: each athlete's categories carry a
+ * `values` array parallel to a schema held at the RESPONSE level.
  */
-function statOf(stats, categories, candidates) {
-  if (!stats) return undefined;
-  for (const cat of categories) {
-    const block = stats[cat];
-    if (!block) continue;
-    for (const key of candidates) {
-      if (block[key] !== undefined && block[key] !== null && block[key] !== "") return block[key];
-    }
-  }
-  return undefined;
+async function getBulkAthletes(season, sort, limit) {
+  const url = `${BYATHLETE}?region=us&lang=en&contentorigin=espn&isqualified=false`
+    + `&season=${season}&seasontype=2&page=1&limit=${limit}&sort=${encodeURIComponent(sort)}`;
+  const d = await safeJSON(url);
+  if (!d?.athletes) return [];
+  const schema = {};
+  (d.categories || []).forEach((c) => { schema[c.name] = c.names || []; });
+  return d.athletes.map((a) => {
+    const stats = { season };
+    (a.categories || []).forEach((c) => {
+      const names = schema[c.name] || c.names || [];
+      const vals = c.values || [];
+      const blk = {};
+      names.forEach((n, i) => { blk[n] = vals[i]; });
+      stats[c.name] = blk;
+    });
+    return {
+      id: a.athlete?.id, name: a.athlete?.displayName, jersey: a.athlete?.jersey,
+      pos: a.athlete?.position?.abbreviation, team: a.athlete?.teamShortName, stats,
+    };
+  }).filter((p) => p.id && p.team && p.pos);
 }
-const DEF_CATS = ["defensive", "defensiveInterceptions", "general", "defensiveTackles"];
-const defStat = (s, candidates) => statOf(s, DEF_CATS, candidates);
 
 /* --------------------------- game detail --------------------------- */
 
@@ -366,24 +384,17 @@ async function getGameDetail(eventId) {
     }));
   });
   return {
-    // no windSpeed on this payload — gust is the wind proxy
     weather: w ? { temp: w.temperature ?? w.highTemperature, gust: w.gust, conditionId: w.conditionId } : null,
     indoor: d.gameInfo?.venue?.indoor,
     injuries,
   };
 }
 
-/* ====================== PROJECTION ENGINE ======================
- * A projection is a season per-game baseline multiplied by a chain of
- * factors. Every factor declares itself whether or not it is modeled yet,
- * so the UI can show the full intended chain and mark what is still pending.
- * Adding a factor = push one object; nothing else changes.
- * ============================================================== */
+/* ====================== PROJECTION ENGINE ====================== */
 
-const MATCHUP_SPREAD = 0.12;   // best defense -12%, worst +12%
-const PACE_SPREAD    = 0.08;   // defensive-player volume proxy
+const MATCHUP_SPREAD = 0.12;
+const PACE_SPREAD    = 0.08;
 
-/** rank 1 (toughest) -> 1-spread ; rank n (softest) -> 1+spread */
 function rankMultiplier(rank, n, spread) {
   if (!rank || !n || n < 2) return 1;
   const mid = (n + 1) / 2;
@@ -409,12 +420,6 @@ function weatherFactor(wx, indoor, phase) {
   };
 }
 
-/**
- * Archetype is classified from production shape — the half of the idea that
- * current data supports. Defense-vs-archetype needs charting data ESPN does
- * not expose publicly (slot/wide snaps, box counts), so that factor declares
- * itself pending rather than inventing a number.
- */
 function archetypeOf(pos, per) {
   if (pos === "QB") {
     if (per.rushYdsPg >= 30) return "Dual threat";
@@ -434,56 +439,30 @@ function archetypeOf(pos, per) {
   return "Rotational WR";
 }
 
-/**
- * Build the factor chain for a player.
- * phase: "pass" | "rush" | "defense"
- */
 function buildFactors({ phase, defRow, defAbbr, teams, wx, indoor, archetype }) {
   const factors = [];
-
   if (phase === "defense") {
     const rank = defRow?.rankOffense;
     factors.push({
-      key: "pace",
-      label: `${defAbbr} offense ${ordinal(rank)} in scoring`,
-      mult: rankMultiplier(rank, teams, PACE_SPREAD),
-      active: !!rank,
-      note: "volume proxy",
+      key: "pace", label: `${defAbbr} offense ${ordinal(rank)} in scoring`,
+      mult: rankMultiplier(rank, teams, PACE_SPREAD), active: !!rank, note: "volume proxy",
     });
   } else {
     const rank = phase === "pass" ? defRow?.rankPass : defRow?.rankRun;
     factors.push({
       key: "def",
       label: `${defAbbr} ${phase === "pass" ? "pass" : "run"} defense ${ordinal(rank)} of ${teams}`,
-      mult: rankMultiplier(rank, teams, MATCHUP_SPREAD),
-      active: !!rank,
+      mult: rankMultiplier(rank, teams, MATCHUP_SPREAD), active: !!rank,
     });
   }
-
   factors.push(weatherFactor(wx, indoor, phase === "rush" ? "rush" : "pass"));
-
-  factors.push({
-    key: "time", label: "Kickoff window / game script", mult: 1,
-    active: false, pending: true, note: "not yet modeled",
-  });
-  factors.push({
-    key: "arch", label: `Defense vs ${archetype || "archetype"}`, mult: 1,
-    active: false, pending: true, note: "needs charting data",
-  });
-
+  factors.push({ key: "time", label: "Kickoff window / game script", mult: 1, active: false, pending: true, note: "not yet modeled" });
+  factors.push({ key: "arch", label: `Defense vs ${archetype || "archetype"}`, mult: 1, active: false, pending: true, note: "needs charting data" });
   return factors;
 }
 
 const chainMultiplier = (factors) =>
   factors.filter((f) => f.active && !isNaN(f.mult)).reduce((a, f) => a * f.mult, 1);
-
-function project(baseline, factors) {
-  const m = chainMultiplier(factors);
-  const out = {};
-  Object.entries(baseline).forEach(([k, v]) => { out[k] = isNaN(v) ? NaN : v * m; });
-  out._mult = m;
-  return out;
-}
 
 function edgeScore(playerGrades, defRank, teams = 32) {
   const gs = playerGrades.filter(Boolean).map((g) => GRADE_SCORE[g]);
@@ -499,6 +478,246 @@ function edgeVerdict(score) {
   if (score >= 42) return { label: "Neutral", tone: "neutral" };
   if (score >= 28) return { label: "Soft fade", tone: "cool" };
   return { label: "Fade", tone: "cold" };
+}
+
+const KIND_OF_POS = (pos) =>
+  pos === "QB" ? "QB"
+  : ["WR", "TE"].includes(pos) ? "REC"
+  : ["RB", "FB"].includes(pos) ? "RB"
+  : DEF_POS.includes(pos) ? "DEF" : null;
+
+/**
+ * THE shared analysis. The scanner and the game cards both call this, so a
+ * player's EDGE is identical in both views by construction.
+ * ctx: { defAbbr, defRow, teams, wx, indoor }
+ */
+function analyze(p, kind, ctx) {
+  const s = p.stats || {};
+  const passing = s.passing || {}, rushing = s.rushing || {}, receiving = s.receiving || {};
+  const gpAny = num(statOf(s, ["general", "passing", "rushing", "receiving", "defensive"], ["gamesPlayed", "teamGamesPlayed"]));
+  const G = gpAny && gpAny > 0 ? gpAny : NaN;
+
+  let per = {}, seasonCells = [], baseline = {}, projLabels = [], grades = [], phase = "pass", volume = 0;
+
+  if (kind === "QB") {
+    phase = "pass";
+    const att = num(passing.passingAttempts), yds = num(passing.passingYards),
+          td = num(passing.passingTouchdowns), ints = num(passing.interceptions),
+          rtg = num(passing.QBRating), ypa = num(passing.yardsPerPassAttempt),
+          cmp = num(passing.completionPct), rush = num(rushing.rushingYards);
+    volume = att;
+    per = { ypg: yds / G, tdPg: td / G, ypa, rushYdsPg: rush / G };
+    const tdPct = att ? (td / att) * 100 : NaN, intPct = att ? (ints / att) * 100 : NaN;
+    const g1 = grade(yds / G, [285, 250, 215, 180]), g2 = grade(rtg, [100, 90, 80, 70]),
+          g3 = grade(ypa, [8.2, 7.4, 6.7, 6.0]), g4 = grade(cmp, [68, 64, 60, 56]),
+          g5 = grade(tdPct, [6, 4.8, 3.8, 2.8]), g6 = grade(intPct, [1.4, 2, 2.6, 3.2], false);
+    grades = [g1, g2, g3, g4, g5, g6];
+    seasonCells = [
+      { label: "YDS/G", value: fmt(yds / G), g: g1 },
+      { label: "RTG", value: fmt(rtg), g: g2 },
+      { label: "YPA", value: fmt(ypa), g: g3 },
+      { label: "CMP%", value: isNaN(cmp) ? "—" : fmt(cmp) + "%", g: g4 },
+      { label: "TD%", value: isNaN(tdPct) ? "—" : tdPct.toFixed(1) + "%", g: g5 },
+      { label: "INT%", value: isNaN(intPct) ? "—" : intPct.toFixed(1) + "%", g: g6 },
+      { label: "TD/G", value: fmt(td / G) },
+      { label: "RUSH/G", value: fmt(rush / G) },
+    ];
+    baseline = { passYds: yds / G, passTd: td / G, ints: ints / G, rushYds: rush / G };
+    projLabels = [
+      { key: "passYds", label: "PASS YDS", d: 1, headline: true },
+      { key: "passTd", label: "PASS TD", d: 2 },
+      { key: "ints", label: "INT", d: 2 },
+      { key: "rushYds", label: "RUSH YDS", d: 1 },
+    ];
+  } else if (kind === "REC") {
+    phase = "pass";
+    const rec = num(receiving.receptions), yds = num(receiving.receivingYards),
+          tgt = num(receiving.receivingTargets), td = num(receiving.receivingTouchdowns),
+          ypr = num(receiving.yardsPerReception);
+    volume = tgt;
+    per = { ypr, tgtPg: tgt / G, recPg: rec / G };
+    const g1 = grade(yds / G, [80, 60, 42, 28]), g2 = grade(tgt / G, [8.5, 6.5, 4.5, 3]),
+          g3 = grade(ypr, [15, 12.5, 10.5, 8.5]), g4 = grade(rec / G, [6, 4.5, 3, 2]);
+    grades = [g1, g2, g3, g4];
+    seasonCells = [
+      { label: "YDS/G", value: fmt(yds / G), g: g1 },
+      { label: "TGT/G", value: fmt(tgt / G), g: g2 },
+      { label: "REC/G", value: fmt(rec / G), g: g4 },
+      { label: "YPR", value: fmt(ypr), g: g3 },
+      { label: "TD", value: int(td) },
+      { label: "YDS", value: int(yds), sub: isNaN(G) ? "" : `${int(G)}g` },
+    ];
+    baseline = { recYds: yds / G, rec: rec / G, tgt: tgt / G, td: td / G };
+    projLabels = [
+      { key: "recYds", label: "REC YDS", d: 1, headline: true },
+      { key: "rec", label: "REC", d: 1 },
+      { key: "tgt", label: "TGT", d: 1 },
+      { key: "td", label: "TD", d: 2 },
+    ];
+  } else if (kind === "RB") {
+    phase = "rush";
+    const car = num(rushing.rushingAttempts), yds = num(rushing.rushingYards),
+          ypc = num(rushing.yardsPerRushAttempt), td = num(rushing.rushingTouchdowns),
+          rec = num(receiving.receptions), recYds = num(receiving.receivingYards);
+    volume = car;
+    per = { carPg: car / G, ypc, recPg: rec / G };
+    const g1 = grade(yds / G, [90, 70, 50, 32]), g2 = grade(car / G, [18, 14, 10, 6]),
+          g3 = grade(ypc, [5, 4.5, 4.1, 3.7]), g4 = grade(rec / G, [4, 2.5, 1.5, .8]);
+    grades = [g1, g2, g3, g4];
+    seasonCells = [
+      { label: "YDS/G", value: fmt(yds / G), g: g1 },
+      { label: "CAR/G", value: fmt(car / G), g: g2 },
+      { label: "YPC", value: fmt(ypc), g: g3 },
+      { label: "REC/G", value: fmt(rec / G), g: g4 },
+      { label: "TD", value: int(td) },
+      { label: "YDS", value: int(yds), sub: isNaN(G) ? "" : `${int(G)}g` },
+    ];
+    baseline = { rushYds: yds / G, car: car / G, td: td / G, recYds: recYds / G };
+    projLabels = [
+      { key: "rushYds", label: "RUSH YDS", d: 1, headline: true },
+      { key: "car", label: "CAR", d: 1 },
+      { key: "td", label: "RUSH TD", d: 2 },
+      { key: "recYds", label: "REC YDS", d: 1 },
+    ];
+  } else {
+    phase = "defense";
+    const tkl = num(defStat(s, ["totalTackles", "tackles", "combinedTackles"])),
+          sacks = num(defStat(s, ["sacks", "totalSacks"])),
+          ints = num(defStat(s, ["interceptions", "totalInterceptions"])),
+          pd = num(defStat(s, ["passesDefended", "passesBattedDown"])),
+          tfl = num(defStat(s, ["tacklesForLoss", "totalTacklesForLoss"])),
+          ff = num(defStat(s, ["fumblesForced", "defensiveFumblesForced"]));
+    volume = tkl;
+    const g1 = grade(tkl / G, [7, 5.5, 4, 2.5]), g2 = grade(sacks / G, [.7, .45, .25, .1]),
+          g3 = grade(ints / G, [.3, .18, .09, .03]), g4 = grade(pd / G, [1, .6, .35, .15]);
+    grades = [g1, g2, g3, g4];
+    seasonCells = [
+      { label: "TKL/G", value: fmt(tkl / G), g: g1 },
+      { label: "SACK/G", value: fmt(sacks / G, 2), g: g2 },
+      { label: "INT/G", value: fmt(ints / G, 2), g: g3 },
+      { label: "PD/G", value: fmt(pd / G, 2), g: g4 },
+      { label: "TKL", value: int(tkl), sub: isNaN(G) ? "" : `${int(G)}g` },
+      { label: "SACKS", value: fmt(sacks, 1) },
+      { label: "INT", value: int(ints) },
+      { label: "TFL", value: int(tfl) },
+      { label: "FF", value: int(ff) },
+    ];
+    baseline = { tkl: tkl / G, sacks: sacks / G, ints: ints / G, pd: pd / G };
+    projLabels = [
+      { key: "tkl", label: "TACKLES", d: 1, headline: true },
+      { key: "sacks", label: "SACKS", d: 2 },
+      { key: "ints", label: "INT", d: 2 },
+      { key: "pd", label: "PD", d: 2 },
+    ];
+  }
+
+  const archetype = kind === "DEF" ? null : archetypeOf(p.pos, per);
+  const factors = buildFactors({ ...ctx, phase, archetype });
+  const mult = chainMultiplier(factors);
+  const projected = { _mult: mult };
+  Object.entries(baseline).forEach(([k, v]) => { projected[k] = isNaN(v) ? NaN : v * mult; });
+
+  const defRank = kind === "DEF" ? ctx.defRow?.rankOffense
+    : phase === "rush" ? ctx.defRow?.rankRun : ctx.defRow?.rankPass;
+  const score = edgeScore(grades, defRank, ctx.teams);
+
+  return {
+    kind, phase, archetype, factors, projected, baseline, seasonCells, projLabels,
+    grades, score, verdict: edgeVerdict(score), gamesPlayed: G, volume,
+    deltaPct: (mult - 1) * 100,
+    headline: projLabels.find((l) => l.headline),
+  };
+}
+
+/* ============================ THE SCANNER ============================ */
+/* Five bulk requests cover the whole league. Doing this by roster would be
+   ~2,000 athlete calls; byathlete returns 250 players per request. */
+
+const SCAN_PULLS = [
+  { sort: "passing.passingYards:desc",    limit: 60  },
+  { sort: "receiving.receivingYards:desc", limit: 250 },
+  { sort: "rushing.rushingYards:desc",    limit: 150 },
+  { sort: "defensive.totalTackles:desc",  limit: 250 },
+  { sort: "defensive.sacks:desc",         limit: 120 },
+];
+
+/** Minimum season volume to qualify — keeps one-game wonders out of the board. */
+const MIN_VOLUME = { QB: 150, REC: 40, RB: 60, DEF: 30 };
+const MIN_GAMES = 6;
+
+async function runScan({ year, week, seasonType, league, onProgress }) {
+  onProgress?.("Loading this week's slate…");
+  const { games, byes } = await getSchedule(year, week, seasonType);
+  if (!games.length) return { rows: [], games, byes, empty: true };
+
+  const opponent = {};
+  games.forEach((g) => {
+    opponent[g.home.abbr] = { game: g, opp: g.away.abbr, home: true };
+    opponent[g.away.abbr] = { game: g, opp: g.home.abbr, home: false };
+  });
+
+  onProgress?.("Pulling league-wide season stats…");
+  const pulls = await pool(SCAN_PULLS, 5, (p) => getBulkAthletes(league.season, p.sort, p.limit));
+
+  /* The bulk feed reports the team a player suited up for IN THAT SEASON. When
+     stats fall back a year (or anyone changed teams in the offseason) that is
+     the wrong game to file him under, so current rosters override it. */
+  onProgress?.("Reconciling offseason moves…");
+  const teamIds = [];
+  games.forEach((g) => { teamIds.push(g.home, g.away); });
+  const rosters = await pool(teamIds, 8, (t) => getRoster(t.id));
+  const currentTeam = {};
+  teamIds.forEach((t, i) => {
+    (rosters[i] || []).forEach((a) => { currentTeam[a.id] = t.abbr; });
+  });
+
+  // Merge and de-duplicate: a player can appear in several sorted pulls.
+  const byId = new Map();
+  pulls.flat().forEach((p) => { if (!byId.has(p.id)) byId.set(p.id, p); });
+  const players = [...byId.values()]
+    .map((p) => {
+      const team = currentTeam[p.id] || p.team;
+      return { ...p, team, moved: currentTeam[p.id] && currentTeam[p.id] !== p.team ? p.team : null };
+    })
+    .filter((p) => opponent[p.team]);
+
+  onProgress?.("Reading game conditions…");
+  const details = await pool(games, 8, (g) => getGameDetail(g.id));
+  const detailByGame = {};
+  games.forEach((g, i) => { detailByGame[g.id] = details[i]; });
+
+  onProgress?.(`Scoring ${players.length} players…`);
+  const rows = [];
+  for (const p of players) {
+    const kind = KIND_OF_POS(p.pos);
+    if (!kind) continue;
+    const meta = opponent[p.team];
+    const detail = detailByGame[meta.game.id];
+    const defAbbr = kind === "DEF" ? p.team === meta.game.home.abbr ? meta.game.home.abbr : meta.game.away.abbr : meta.opp;
+
+    /* For a defender, the "opponent" whose offense drives his volume is the
+       other team; for a skill player it's the defense he faces. Either way the
+       row we look up is the OPPOSING team's. */
+    const ctx = {
+      defAbbr: meta.opp,
+      defRow: league.table[meta.opp],
+      teams: league.teams,
+      wx: detail?.weather,
+      indoor: meta.game.indoor || detail?.indoor,
+    };
+    const a = analyze(p, kind, ctx);
+    if (a.score === null) continue;
+    if (!(a.gamesPlayed >= MIN_GAMES)) continue;
+    if (!(a.volume >= (MIN_VOLUME[kind] || 0))) continue;
+
+    rows.push({
+      player: p, kind, pos: p.pos, team: p.team, opp: meta.opp, home: meta.home,
+      moved: p.moved, game: meta.game, analysis: a, score: a.score,
+    });
+  }
+
+  rows.sort((a, b) => b.score - a.score);
+  return { rows, games, byes, season: league.season };
 }
 
 /* ------------------------------ UI atoms ------------------------------ */
@@ -523,14 +742,13 @@ function Badge({ label, tone = "neutral", icon }) {
   );
 }
 
-/** White chalk rule, like a yard line. */
 const ChalkLine = ({ opacity = 1, style }) => (
   <div style={{ height: 1, background: T.chalkDim, opacity, ...style }} />
 );
 
-function Panel({ children, style, className = "" }) {
+function Panel({ children, style, className = "", onClick }) {
   return (
-    <div className={`card ${className}`} style={{
+    <div className={`card ${className}`} onClick={onClick} style={{
       background: "linear-gradient(180deg, rgba(10,45,26,.82), rgba(10,45,26,.94))",
       border: `1px solid ${T.chalkFaint}`, borderRadius: 5,
       boxShadow: SHADOW, ...style,
@@ -557,7 +775,6 @@ function SectionTitle({ children, right }) {
   );
 }
 
-/** One season-stat readout. */
 function Stat({ label, value, g, sub }) {
   return (
     <div style={{ minWidth: 62 }}>
@@ -571,7 +788,6 @@ function Stat({ label, value, g, sub }) {
   );
 }
 
-/** Projected line — gold, on a leather plate. */
 function ProjStat({ label, value, delta }) {
   return (
     <div style={{ minWidth: 74 }}>
@@ -608,9 +824,7 @@ function FactorChain({ factors }) {
             <strong style={{
               fontFamily: "'Barlow Condensed',sans-serif", fontSize: 13, letterSpacing: .4,
               color: pending ? T.inkFaint : pct > 0 ? T.gold : pct < 0 ? T.bad : T.chalk,
-            }}>
-              {pending ? (f.note || "pending") : `×${f.mult.toFixed(3)}`}
-            </strong>
+            }}>{pending ? (f.note || "pending") : `×${f.mult.toFixed(3)}`}</strong>
           </span>
         );
       })}
@@ -620,141 +834,12 @@ function FactorChain({ factors }) {
 
 /* --------------------------- the player card --------------------------- */
 
-function PlayerCard({ p, defAbbr, defRow, teams, wx, indoor, kind }) {
-  const s = p.stats || {};
-  const passing = s.passing || {}, rushing = s.rushing || {}, receiving = s.receiving || {};
-
-  const gpOf = (blk) => num(blk.gamesPlayed);
-  let gp = gpOf(passing) || gpOf(rushing) || gpOf(receiving);
-  if (kind === "DEF") gp = num(defStat(s, ["gamesPlayed", "teamGamesPlayed"]));
-  const G = gp && gp > 0 ? gp : NaN;
-
-  let per = {}, seasonCells = [], baseline = {}, projLabels = [], grades = [], phase = "pass";
-
-  if (kind === "QB") {
-    phase = "pass";
-    const att = num(passing.passingAttempts), yds = num(passing.passingYards),
-          td = num(passing.passingTouchdowns), ints = num(passing.interceptions),
-          rtg = num(passing.QBRating), ypa = num(passing.yardsPerPassAttempt),
-          cmp = num(passing.completionPct), rush = num(rushing.rushingYards);
-    per = { ypg: yds / G, tdPg: td / G, ypa, rushYdsPg: rush / G };
-    const tdPct = att ? (td / att) * 100 : NaN, intPct = att ? (ints / att) * 100 : NaN;
-    const g1 = grade(yds / G, [285, 250, 215, 180]), g2 = grade(rtg, [100, 90, 80, 70]),
-          g3 = grade(ypa, [8.2, 7.4, 6.7, 6.0]), g4 = grade(cmp, [68, 64, 60, 56]),
-          g5 = grade(tdPct, [6, 4.8, 3.8, 2.8]), g6 = grade(intPct, [1.4, 2, 2.6, 3.2], false);
-    grades = [g1, g2, g3, g4, g5, g6];
-    seasonCells = [
-      { label: "YDS/G", value: fmt(yds / G), g: g1 },       /* requested */
-      { label: "RTG", value: fmt(rtg), g: g2 },
-      { label: "YPA", value: fmt(ypa), g: g3 },
-      { label: "CMP%", value: isNaN(cmp) ? "—" : fmt(cmp) + "%", g: g4 },
-      { label: "TD%", value: isNaN(tdPct) ? "—" : tdPct.toFixed(1) + "%", g: g5 },
-      { label: "INT%", value: isNaN(intPct) ? "—" : intPct.toFixed(1) + "%", g: g6 },
-      { label: "TD/G", value: fmt(td / G) },
-      { label: "RUSH/G", value: fmt(rush / G) },
-    ];
-    baseline = { passYds: yds / G, passTd: td / G, ints: ints / G, rushYds: rush / G };
-    projLabels = [
-      { key: "passYds", label: "PASS YDS", d: 1 },
-      { key: "passTd", label: "PASS TD", d: 2 },
-      { key: "ints", label: "INT", d: 2 },
-      { key: "rushYds", label: "RUSH YDS", d: 1 },
-    ];
-  } else if (kind === "REC") {
-    phase = "pass";
-    const rec = num(receiving.receptions), yds = num(receiving.receivingYards),
-          tgt = num(receiving.receivingTargets), td = num(receiving.receivingTouchdowns),
-          ypr = num(receiving.yardsPerReception);
-    per = { ypr, tgtPg: tgt / G, recPg: rec / G };
-    const g1 = grade(yds / G, [80, 60, 42, 28]), g2 = grade(tgt / G, [8.5, 6.5, 4.5, 3]),
-          g3 = grade(ypr, [15, 12.5, 10.5, 8.5]), g4 = grade(rec / G, [6, 4.5, 3, 2]);
-    grades = [g1, g2, g3, g4];
-    seasonCells = [
-      { label: "YDS/G", value: fmt(yds / G), g: g1 },
-      { label: "TGT/G", value: fmt(tgt / G), g: g2 },
-      { label: "REC/G", value: fmt(rec / G), g: g4 },
-      { label: "YPR", value: fmt(ypr), g: g3 },
-      { label: "TD", value: int(td) },
-      { label: "YDS", value: int(yds), sub: isNaN(G) ? "" : `${int(G)}g` },
-    ];
-    baseline = { recYds: yds / G, rec: rec / G, tgt: tgt / G, td: td / G };
-    projLabels = [
-      { key: "recYds", label: "REC YDS", d: 1 },
-      { key: "rec", label: "REC", d: 1 },
-      { key: "tgt", label: "TGT", d: 1 },
-      { key: "td", label: "TD", d: 2 },
-    ];
-  } else if (kind === "RB") {
-    phase = "rush";
-    const car = num(rushing.rushingAttempts), yds = num(rushing.rushingYards),
-          ypc = num(rushing.yardsPerRushAttempt), td = num(rushing.rushingTouchdowns),
-          rec = num(receiving.receptions), recYds = num(receiving.receivingYards);
-    per = { carPg: car / G, ypc, recPg: rec / G };
-    const g1 = grade(yds / G, [90, 70, 50, 32]), g2 = grade(car / G, [18, 14, 10, 6]),
-          g3 = grade(ypc, [5, 4.5, 4.1, 3.7]), g4 = grade(rec / G, [4, 2.5, 1.5, .8]);
-    grades = [g1, g2, g3, g4];
-    seasonCells = [
-      { label: "YDS/G", value: fmt(yds / G), g: g1 },
-      { label: "CAR/G", value: fmt(car / G), g: g2 },
-      { label: "YPC", value: fmt(ypc), g: g3 },
-      { label: "REC/G", value: fmt(rec / G), g: g4 },
-      { label: "TD", value: int(td) },
-      { label: "YDS", value: int(yds), sub: isNaN(G) ? "" : `${int(G)}g` },
-    ];
-    baseline = { rushYds: yds / G, car: car / G, td: td / G, recYds: recYds / G };
-    projLabels = [
-      { key: "rushYds", label: "RUSH YDS", d: 1 },
-      { key: "car", label: "CAR", d: 1 },
-      { key: "td", label: "RUSH TD", d: 2 },
-      { key: "recYds", label: "REC YDS", d: 1 },
-    ];
-  } else { /* DEF */
-    phase = "defense";
-    const tkl = num(defStat(s, ["totalTackles", "tackles", "combinedTackles"])),
-          solo = num(defStat(s, ["soloTackles", "unassistedTackles"])),
-          sacks = num(defStat(s, ["sacks", "totalSacks"])),
-          ints = num(defStat(s, ["interceptions", "defensiveInterceptions", "totalInterceptions"])),
-          pd = num(defStat(s, ["passesDefended", "passesBattedDown"])),
-          tfl = num(defStat(s, ["tacklesForLoss", "totalTacklesForLoss"])),
-          ff = num(defStat(s, ["fumblesForced", "defensiveFumblesForced"]));
-    per = {};
-    const g1 = grade(tkl / G, [7, 5.5, 4, 2.5]), g2 = grade(sacks / G, [.7, .45, .25, .1]),
-          g3 = grade(ints / G, [.3, .18, .09, .03]), g4 = grade(pd / G, [1, .6, .35, .15]);
-    grades = [g1, g2, g3, g4];
-    seasonCells = [
-      { label: "TKL/G", value: fmt(tkl / G), g: g1 },
-      { label: "SACK/G", value: fmt(sacks / G, 2), g: g2 },
-      { label: "INT/G", value: fmt(ints / G, 2), g: g3 },
-      { label: "PD/G", value: fmt(pd / G, 2), g: g4 },
-      { label: "TKL", value: int(tkl), sub: isNaN(G) ? "" : `${int(G)}g` },
-      { label: "SACKS", value: fmt(sacks, 1) },
-      { label: "INT", value: int(ints) },
-      { label: "TFL", value: int(tfl) },
-      { label: "FF", value: int(ff) },
-    ];
-    baseline = { tkl: tkl / G, sacks: sacks / G, ints: ints / G, pd: pd / G };
-    projLabels = [
-      { key: "tkl", label: "TACKLES", d: 1 },
-      { key: "sacks", label: "SACKS", d: 2 },
-      { key: "ints", label: "INT", d: 2 },
-      { key: "pd", label: "PD", d: 2 },
-    ];
-  }
-
-  const archetype = kind === "DEF" ? null : archetypeOf(p.pos, per);
-  const factors = buildFactors({ phase, defRow, defAbbr, teams, wx, indoor, archetype });
-  const projected = project(baseline, factors);
-  const deltaPct = (projected._mult - 1) * 100;
-
-  const defRank = kind === "DEF" ? defRow?.rankOffense
-    : phase === "rush" ? defRow?.rankRun : defRow?.rankPass;
-  const score = edgeScore(grades, defRank, teams);
-  const verdict = edgeVerdict(score);
-  const hasAny = seasonCells.some((c) => c.value !== "—");
+function PlayerCard({ p, kind, ctx }) {
+  const a = useMemo(() => analyze(p, kind, ctx), [p, kind, ctx]);
+  const hasAny = a.seasonCells.some((c) => c.value !== "—");
 
   return (
     <Panel style={{ marginBottom: 10, overflow: "hidden" }}>
-      {/* header */}
       <div style={{
         display: "flex", alignItems: "center", gap: 10, padding: "9px 13px",
         background: "rgba(0,0,0,.22)", flexWrap: "wrap",
@@ -765,68 +850,230 @@ function PlayerCard({ p, defAbbr, defRow, teams, wx, indoor, kind }) {
           letterSpacing: .5, boxShadow: SHADOW_SM,
         }}>{p.jersey ? `#${p.jersey}` : p.pos}</span>
         <span style={{ fontWeight: 600, fontSize: 14, color: T.chalk }}>{p.name}</span>
-        <span style={{ fontSize: 10, color: T.inkFaint }}>
-          {p.pos} · {p.stats?.season || "—"} season
-        </span>
-        {archetype && <Badge label={archetype} tone="leather" />}
-        {p.injury && <Badge label={`${p.injury.status}`} tone={/out|doubtful/i.test(p.injury.status) ? "cold" : "cool"} />}
+        <span style={{ fontSize: 10, color: T.inkFaint }}>{p.pos} · {p.stats?.season || "—"} season</span>
+        {a.archetype && <Badge label={a.archetype} tone="leather" />}
+        {p.injury && <Badge label={p.injury.status} tone={/out|doubtful/i.test(p.injury.status) ? "cold" : "cool"} />}
         <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
           <span style={{
             fontFamily: "'Barlow Condensed',sans-serif", fontSize: 25, fontWeight: 700,
-            color: TONES[verdict.tone].fg, lineHeight: 1,
-          }}>{score === null ? "—" : score}</span>
-          <Badge label={verdict.label} tone={verdict.tone} />
+            color: TONES[a.verdict.tone].fg, lineHeight: 1,
+          }}>{a.score === null ? "—" : a.score}</span>
+          <Badge label={a.verdict.label} tone={a.verdict.tone} />
         </span>
       </div>
       <ChalkLine />
 
       {!hasAny && (
         <div style={{ padding: "12px 13px", fontSize: 11, color: T.inkFaint }}>
-          No {kind === "DEF" ? "defensive" : ""} stats returned for this player.
+          No stats returned for this player.
         </div>
       )}
 
       {hasAny && (
         <>
-          {/* SEASON */}
           <div style={{ padding: "11px 13px 12px" }}>
-            <div style={{
-              fontSize: 9, letterSpacing: 1.4, color: T.inkFaint,
-              fontWeight: 600, marginBottom: 8,
-            }}>SEASON — WHAT HE'S ACTUALLY DONE</div>
+            <div style={{ fontSize: 9, letterSpacing: 1.4, color: T.inkFaint, fontWeight: 600, marginBottom: 8 }}>
+              SEASON — WHAT HE'S ACTUALLY DONE
+            </div>
             <div style={{ display: "flex", gap: 18, flexWrap: "wrap" }}>
-              {seasonCells.map((c, i) => <Stat key={i} {...c} />)}
+              {a.seasonCells.map((c, i) => <Stat key={i} {...c} />)}
             </div>
           </div>
 
-          {/* PROJECTION */}
           <div style={{
             padding: "11px 13px 13px",
             background: "linear-gradient(180deg, rgba(107,52,16,.30), rgba(67,32,10,.42))",
             borderTop: `1px solid ${T.chalkFaint}`,
           }}>
-            <div style={{
-              display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap", marginBottom: 8,
-            }}>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
               <span style={{ fontSize: 9, letterSpacing: 1.4, color: "#e8c9ac", fontWeight: 600 }}>
-                PROJECTED LINE vs {defAbbr}
+                PROJECTED LINE vs {ctx.defAbbr}
               </span>
               <span style={{ fontSize: 9, color: "#c9a583" }}>
-                season baseline × {projected._mult.toFixed(3)}
+                season baseline × {a.projected._mult.toFixed(3)}
               </span>
             </div>
             <div style={{ display: "flex", gap: 22, flexWrap: "wrap" }}>
-              {projLabels.map((l) => (
+              {a.projLabels.map((l) => (
                 <ProjStat key={l.key} label={l.label}
-                  value={isNaN(projected[l.key]) ? "—" : projected[l.key].toFixed(l.d)}
-                  delta={isNaN(projected[l.key]) ? undefined : deltaPct} />
+                  value={isNaN(a.projected[l.key]) ? "—" : a.projected[l.key].toFixed(l.d)}
+                  delta={isNaN(a.projected[l.key]) ? undefined : a.deltaPct} />
               ))}
             </div>
-            <FactorChain factors={factors} />
+            <FactorChain factors={a.factors} />
           </div>
         </>
       )}
     </Panel>
+  );
+}
+
+/* --------------------------- scanner board --------------------------- */
+
+const SCAN_TABS = [
+  { key: "QB",  label: "QB",  match: (r) => r.pos === "QB" },
+  { key: "RB",  label: "RB",  match: (r) => ["RB", "FB"].includes(r.pos) },
+  { key: "WR",  label: "WR",  match: (r) => r.pos === "WR" },
+  { key: "TE",  label: "TE",  match: (r) => r.pos === "TE" },
+  { key: "DEF", label: "DEF", match: (r) => r.kind === "DEF" },
+];
+
+function ScanRow({ rank, row, onOpen }) {
+  const a = row.analysis;
+  const head = a.headline;
+  const headVal = head && !isNaN(a.projected[head.key]) ? a.projected[head.key].toFixed(head.d) : "—";
+  const defFactor = a.factors.find((f) => f.key === "def" || f.key === "pace");
+  const wxFactor = a.factors.find((f) => f.key === "wx");
+
+  return (
+    <div className="scan-row" onClick={() => onOpen(row.game)} style={{
+      display: "flex", alignItems: "center", gap: 12, padding: "9px 12px",
+      borderBottom: `1px solid ${T.chalkFaint}`, borderLeft: "3px solid transparent",
+    }}>
+      <span style={{
+        fontFamily: "'Barlow Condensed',sans-serif", fontSize: 17, fontWeight: 700,
+        color: rank <= 3 ? T.gold : T.inkFaint, minWidth: 22, textAlign: "right",
+      }}>{rank}</span>
+
+      <div style={{ minWidth: 0, flex: "1 1 190px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap" }}>
+          <span style={{ fontWeight: 600, fontSize: 13, color: T.chalk }}>{row.player.name}</span>
+          <span style={{ fontSize: 10, color: T.inkFaint }}>
+            {row.pos} · {row.team} {row.home ? "vs" : "@"} {row.opp}
+          </span>
+        </div>
+        <div style={{ display: "flex", gap: 6, marginTop: 4, flexWrap: "wrap" }}>
+          {a.archetype && <Badge label={a.archetype} tone="leather" />}
+          {row.moved && <Badge label={`stats w/ ${row.moved}`} tone="cool" icon="⇄" />}
+          {defFactor && <Badge label={defFactor.label} tone={defFactor.mult > 1.02 ? "warm" : defFactor.mult < 0.98 ? "cool" : "neutral"} />}
+          {wxFactor?.active && wxFactor.mult !== 1 && <Badge label={wxFactor.label} tone="cold" />}
+        </div>
+      </div>
+
+      <div style={{ textAlign: "right", minWidth: 88 }}>
+        <div style={{ fontSize: 9, color: "#e8c9ac", letterSpacing: .5 }}>{head?.label || "PROJ"}</div>
+        <div style={{
+          fontFamily: "'Barlow Condensed',sans-serif", fontSize: 21, fontWeight: 700, color: T.gold,
+        }}>{headVal}</div>
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 130, justifyContent: "flex-end" }}>
+        <span style={{
+          fontFamily: "'Barlow Condensed',sans-serif", fontSize: 25, fontWeight: 700,
+          color: TONES[a.verdict.tone].fg, lineHeight: 1,
+        }}>{a.score}</span>
+        <Badge label={a.verdict.label} tone={a.verdict.tone} />
+      </div>
+    </div>
+  );
+}
+
+function Scanner({ scan, scanning, progress, league, week, onOpen, onRescan }) {
+  const [tab, setTab] = useState("QB");
+  const rows = scan?.rows || [];
+  const active = SCAN_TABS.find((t) => t.key === tab);
+  const top = useMemo(
+    () => rows.filter(active.match).slice(0, 10),
+    [rows, tab]
+  );
+  const counts = useMemo(() => {
+    const c = {};
+    SCAN_TABS.forEach((t) => { c[t.key] = rows.filter(t.match).length; });
+    return c;
+  }, [rows]);
+
+  return (
+    <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
+      <div style={{ flexShrink: 0, marginBottom: 14 }}>
+        <div style={{
+          fontFamily: "'Barlow Condensed',sans-serif", fontSize: 32, fontWeight: 700,
+          letterSpacing: 1.5, lineHeight: 1.05, color: T.chalk,
+          textShadow: `0 2px 0 ${T.leatherDark}, 0 4px 12px rgba(0,0,0,.5)`,
+        }}>
+          WEEK {week} <span style={{ color: T.gold }}>EDGE BOARD</span>
+        </div>
+        <div style={{ fontSize: 11.5, color: T.inkDim, marginTop: 3 }}>
+          Top 10 rated edges at each position across the full slate
+          {scan?.games ? ` · ${scan.games.length} games` : ""}
+          {league?.season ? ` · ${league.season} stats` : ""}
+        </div>
+      </div>
+
+      {/* position tabs */}
+      <div style={{ display: "flex", gap: 7, marginBottom: 14, flexShrink: 0, flexWrap: "wrap" }}>
+        {SCAN_TABS.map((t) => (
+          <button key={t.key} onClick={() => setTab(t.key)} style={{
+            padding: "7px 16px", fontSize: 13, fontWeight: 700, borderRadius: 3, cursor: "pointer",
+            background: tab === t.key ? T.gold : "rgba(0,0,0,.3)",
+            color: tab === t.key ? T.leatherDark : T.ink,
+            border: `1px solid ${tab === t.key ? T.gold : T.chalkDim}`,
+            fontFamily: "'Barlow Condensed',sans-serif", letterSpacing: 1,
+            boxShadow: tab === t.key ? SHADOW_SM : "none",
+          }}>
+            {t.label}
+            <span style={{ opacity: .65, fontSize: 10, marginLeft: 6 }}>{counts[t.key] || 0}</span>
+          </button>
+        ))}
+        <button onClick={onRescan} disabled={scanning} style={{
+          marginLeft: "auto", padding: "7px 14px", fontSize: 11, fontWeight: 600, borderRadius: 3,
+          cursor: scanning ? "default" : "pointer", background: "rgba(0,0,0,.3)",
+          color: scanning ? T.inkFaint : T.ink, border: `1px solid ${T.chalkDim}`,
+        }}>{scanning ? "Scanning…" : "↻ Rescan"}</button>
+      </div>
+
+      <div style={{ flex: 1, overflowY: "auto", paddingRight: 5 }}>
+        {scanning && (
+          <Panel style={{ padding: "30px 20px", textAlign: "center" }}>
+            <div className="pulsing" style={{
+              fontFamily: "'Barlow Condensed',sans-serif", fontSize: 18,
+              letterSpacing: 2.5, color: T.gold,
+            }}>SCANNING THE SLATE…</div>
+            <div style={{ fontSize: 11, color: T.inkDim, marginTop: 8 }}>{progress}</div>
+          </Panel>
+        )}
+
+        {!scanning && scan?.empty && (
+          <Panel style={{ padding: "22px 18px", fontSize: 12, color: T.inkDim }}>
+            No games scheduled for this week.
+          </Panel>
+        )}
+
+        {!scanning && !scan?.empty && top.length === 0 && (
+          <Panel style={{ padding: "22px 18px", fontSize: 12, color: T.inkDim }}>
+            No qualifying {active.label} met the minimum volume threshold for this slate.
+          </Panel>
+        )}
+
+        {!scanning && top.length > 0 && (
+          <Panel style={{ overflow: "hidden" }}>
+            <div style={{
+              display: "flex", alignItems: "center", gap: 8, padding: "8px 12px",
+              background: "rgba(0,0,0,.25)", fontSize: 9, letterSpacing: 1.3,
+              color: T.inkFaint, fontWeight: 600,
+            }}>
+              TOP 10 {active.label} EDGES · CLICK A ROW FOR THE FULL MATCHUP
+            </div>
+            <ChalkLine />
+            {top.map((row, i) => (
+              <ScanRow key={row.player.id} rank={i + 1} row={row} onOpen={onOpen} />
+            ))}
+          </Panel>
+        )}
+
+        {!scanning && scan?.byes?.length > 0 && (
+          <div style={{ fontSize: 10, color: T.inkFaint, marginTop: 12 }}>
+            On bye (excluded): {scan.byes.join(" · ")}
+          </div>
+        )}
+        {!scanning && top.length > 0 && (
+          <div style={{ fontSize: 10, color: T.inkFaint, lineHeight: 1.6, padding: "12px 0 22px" }}>
+            EDGE = 60% season production grade + 40% opponent softness by league rank.
+            Qualifiers need {MIN_GAMES}+ games and meaningful volume. Projected figures are a
+            per-game baseline times the factor chain — open a matchup to audit every multiplier.
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -849,7 +1096,7 @@ function DefenseCard({ def, defAbbr, season }) {
   return (
     <Panel style={{ padding: "12px 14px", marginBottom: 14 }}>
       <div style={{ fontSize: 10, color: T.inkFaint, letterSpacing: .8, marginBottom: 10 }}>
-        {defAbbr} DEFENSE · {season} RANKS <span style={{ color: T.inkFaint }}>(1 = toughest, 32 = softest)</span>
+        {defAbbr} DEFENSE · {season} RANKS (1 = toughest, 32 = softest)
       </div>
       <div style={{ display: "flex", gap: 22, flexWrap: "wrap" }}>
         {item("PTS ALLOWED", def.rankPapg, isNaN(def.papg) ? "—" : def.papg.toFixed(1) + "/g")}
@@ -868,7 +1115,7 @@ function DefenseCard({ def, defAbbr, season }) {
 
 /* ------------------------------ game view ------------------------------ */
 
-function GameView({ game, league }) {
+function GameView({ game, league, onBack }) {
   const [side, setSide] = useState("home");
   const [detail, setDetail] = useState(null);
   const [groups, setGroups] = useState({ QB: [], REC: [], RB: [], DEF: [] });
@@ -886,12 +1133,10 @@ function GameView({ game, league }) {
   useEffect(() => {
     const my = ++reqId.current;
     setLoading(true); setErr(null); setGroups({ QB: [], REC: [], RB: [], DEF: [] });
-
     (async () => {
       try {
         const [offRoster, defRoster] = await Promise.all([getRoster(off.id), getRoster(def.id)]);
         if (!offRoster.length) throw new Error("roster unavailable");
-
         const offWant = offRoster.filter((p) => OFF_POS.includes(p.pos));
         const defWant = defRoster.filter((p) => DEF_POS.includes(p.pos));
         const all = [...offWant, ...defWant];
@@ -907,7 +1152,7 @@ function GameView({ game, league }) {
         const defPlayers = defWant.map((p, i) => decorate(p, offWant.length + i, defInj)).filter((p) => p.stats);
 
         const v = (p, cat, key) => num(p.stats?.[cat]?.[key]) || 0;
-        const dv = (p, names) => num(defStat(p.stats, names)) || 0;
+        const dv = (p) => num(defStat(p.stats, ["totalTackles", "tackles", "combinedTackles"])) || 0;
 
         setGroups({
           QB: offPlayers.filter((p) => p.pos === "QB")
@@ -916,9 +1161,7 @@ function GameView({ game, league }) {
             .sort((a, b) => v(b, "receiving", "receivingYards") - v(a, "receiving", "receivingYards")).slice(0, 5),
           RB: offPlayers.filter((p) => ["RB", "FB"].includes(p.pos))
             .sort((a, b) => v(b, "rushing", "rushingAttempts") - v(a, "rushing", "rushingAttempts")).slice(0, 3),
-          DEF: defPlayers
-            .sort((a, b) => dv(b, ["totalTackles", "tackles", "combinedTackles"])
-                          - dv(a, ["totalTackles", "tackles", "combinedTackles"])).slice(0, 6),
+          DEF: defPlayers.sort((a, b) => dv(b) - dv(a)).slice(0, 6),
         });
         setLoading(false);
       } catch (e) {
@@ -939,13 +1182,15 @@ function GameView({ game, league }) {
   const temp = num(wx?.temp), gust = num(wx?.gust);
   const divisional = DIVISION[game.home.abbr] && DIVISION[game.home.abbr] === DIVISION[game.away.abbr];
   const offInjuries = detail?.injuries?.[off.abbr] || [];
-
-  const common = { defAbbr: def.abbr, defRow, teams, wx, indoor };
+  const ctx = { defAbbr: def.abbr, defRow, teams, wx, indoor };
 
   return (
     <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
-      {/* scoreboard header */}
       <div style={{ flexShrink: 0, marginBottom: 13 }}>
+        <button onClick={onBack} style={{
+          background: "none", border: "none", color: T.gold, fontSize: 11,
+          cursor: "pointer", padding: 0, marginBottom: 6, fontFamily: "'Inter',sans-serif",
+        }}>← Back to Edge Board</button>
         <div style={{
           fontFamily: "'Barlow Condensed',sans-serif", fontSize: 34, fontWeight: 700,
           letterSpacing: 1.5, lineHeight: 1.05, color: T.chalk,
@@ -960,8 +1205,7 @@ function GameView({ game, league }) {
         <div style={{ display: "flex", gap: 7, marginTop: 9, flexWrap: "wrap" }}>
           {!indoor && !isNaN(gust) && gust >= 15 &&
             <Badge icon="💨" label={`Gusts ${Math.round(gust)} mph — passing suppressed`} tone="cold" />}
-          {!indoor && !isNaN(temp) && temp < 35 &&
-            <Badge icon="🧊" label={`${Math.round(temp)}°F`} tone="cold" />}
+          {!indoor && !isNaN(temp) && temp < 35 && <Badge icon="🧊" label={`${Math.round(temp)}°F`} tone="cold" />}
           {!indoor && !isNaN(temp) && temp >= 35 && (isNaN(gust) || gust < 15) &&
             <Badge icon="🌤" label={`${Math.round(temp)}°F${isNaN(gust) ? "" : `, gusts ${Math.round(gust)}`}`} />}
           {indoor && <Badge icon="🏟" label="Indoor — no weather factor" />}
@@ -970,7 +1214,6 @@ function GameView({ game, league }) {
         </div>
       </div>
 
-      {/* side toggle */}
       <div style={{ display: "flex", gap: 8, marginBottom: 14, flexShrink: 0, flexWrap: "wrap" }}>
         {[["away", game.away, game.home], ["home", game.home, game.away]].map(([s, o, d]) => (
           <button key={s} onClick={() => setSide(s)} style={{
@@ -1005,7 +1248,7 @@ function GameView({ game, league }) {
 
         {err && <div style={{ color: T.poor, fontSize: 12, padding: "10px 0" }}>Could not load: {err}</div>}
         {loading && (
-          <div style={{
+          <div className="pulsing" style={{
             textAlign: "center", padding: 40, color: T.inkDim,
             fontFamily: "'Barlow Condensed',sans-serif", fontSize: 17, letterSpacing: 2.5,
           }}>LOADING ROSTERS & SEASON STATS…</div>
@@ -1013,31 +1256,17 @@ function GameView({ game, league }) {
 
         {!loading && (
           <>
-            <SectionTitle right={`vs ${def.abbr} pass D · ${ordinal(defRow?.rankPass)}`}>
-              🎯 Quarterback
-            </SectionTitle>
-            {groups.QB.map((p) => <PlayerCard key={p.id} p={p} kind="QB" {...common} />)}
+            <SectionTitle right={`vs ${def.abbr} pass D · ${ordinal(defRow?.rankPass)}`}>🎯 Quarterback</SectionTitle>
+            {groups.QB.map((p) => <PlayerCard key={p.id} p={p} kind="QB" ctx={ctx} />)}
 
-            <SectionTitle right={`vs ${def.abbr} secondary · ${ordinal(defRow?.rankPass)}`}>
-              ⚡ Receivers &amp; Tight Ends
-            </SectionTitle>
-            {groups.REC.map((p) => <PlayerCard key={p.id} p={p} kind="REC" {...common} />)}
+            <SectionTitle right={`vs ${def.abbr} secondary · ${ordinal(defRow?.rankPass)}`}>⚡ Receivers &amp; Tight Ends</SectionTitle>
+            {groups.REC.map((p) => <PlayerCard key={p.id} p={p} kind="REC" ctx={ctx} />)}
 
-            <SectionTitle right={`vs ${def.abbr} run D · ${ordinal(defRow?.rankRun)}`}>
-              🏃 Running Backs
-            </SectionTitle>
-            {groups.RB.map((p) => <PlayerCard key={p.id} p={p} kind="RB" {...common} />)}
+            <SectionTitle right={`vs ${def.abbr} run D · ${ordinal(defRow?.rankRun)}`}>🏃 Running Backs</SectionTitle>
+            {groups.RB.map((p) => <PlayerCard key={p.id} p={p} kind="RB" ctx={ctx} />)}
 
-            <SectionTitle right={`vs ${off.abbr} offense · ${ordinal(defRow?.rankOffense)} scoring`}>
-              🛡 {def.abbr} Defenders
-            </SectionTitle>
-            {groups.DEF.length === 0 && (
-              <Panel style={{ padding: "12px 14px", fontSize: 11, color: T.inkDim, marginBottom: 10 }}>
-                No defensive stats returned. ESPN's athlete feed exposes defensive fields under
-                names this build infers rather than verified — see docs/api-notes.md.
-              </Panel>
-            )}
-            {groups.DEF.map((p) => <PlayerCard key={p.id} p={p} kind="DEF" {...common} />)}
+            <SectionTitle right={`vs ${off.abbr} offense · ${ordinal(defRow?.rankOffense)} scoring`}>🛡 {def.abbr} Defenders</SectionTitle>
+            {groups.DEF.map((p) => <PlayerCard key={p.id} p={p} kind="DEF" ctx={ctx} />)}
 
             <div style={{ fontSize: 10, color: T.inkFaint, lineHeight: 1.6, padding: "4px 0 22px" }}>
               Projections are a season per-game baseline times the factor chain shown on each card.
@@ -1065,6 +1294,11 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
+  const [scan, setScan] = useState(null);
+  const [scanning, setScanning] = useState(false);
+  const [progress, setProgress] = useState("");
+  const scanKey = useRef("");
+
   useEffect(() => {
     (async () => {
       const d = await safeJSON(`${ESPN}/scoreboard`);
@@ -1084,22 +1318,40 @@ function App() {
       .catch((e) => { setError(e.message); setLoading(false); });
   }, [year, week, seasonType]);
 
+  const doScan = useCallback(async (force) => {
+    if (!league || !week) return;
+    const key = `${year}-${week}-${seasonType}-${league.season}`;
+    if (!force && scanKey.current === key) return;
+    scanKey.current = key;
+    setScanning(true); setScan(null);
+    try {
+      const result = await runScan({
+        year, week, seasonType, league, onProgress: setProgress,
+      });
+      setScan(result);
+    } catch (e) {
+      setScan({ rows: [], error: e.message });
+    }
+    setScanning(false);
+  }, [league, week, year, seasonType]);
+
+  useEffect(() => { doScan(false); }, [doScan]);
+
   const weeks = seasonType === 2 ? 18 : 5;
 
   return (
     <div className="field" style={{
       fontFamily: "'Inter',sans-serif", height: "100vh", display: "flex", flexDirection: "column",
     }}>
-      {/* header */}
       <div style={{
         padding: "11px 18px", display: "flex", alignItems: "center", gap: 14,
         background: "linear-gradient(180deg, rgba(10,45,26,.95), rgba(10,45,26,.72))",
         borderBottom: `2px solid ${T.chalk}`, flexShrink: 0, flexWrap: "wrap",
         boxShadow: `0 3px 0 ${T.leatherDark}, 0 8px 20px rgba(0,0,0,.4)`, zIndex: 2,
       }}>
-        <div style={{
+        <div onClick={() => setSelected(null)} style={{
           fontFamily: "'Barlow Condensed',sans-serif", fontSize: 25, fontWeight: 700,
-          letterSpacing: 2.5, color: T.gold,
+          letterSpacing: 2.5, color: T.gold, cursor: "pointer",
           textShadow: `0 2px 0 ${T.leatherDark}, 0 4px 10px rgba(0,0,0,.55)`,
         }}>🏈 GRIDIRON EDGE</div>
         <div style={{ color: T.inkDim, fontSize: 10, letterSpacing: 1.4, paddingTop: 3 }}>
@@ -1122,11 +1374,20 @@ function App() {
       </div>
 
       <div className="gx-shell" style={{ display: "flex", flex: 1, overflow: "hidden" }}>
-        {/* sideline */}
         <div className="gx-side" style={{
           width: 224, borderRight: `2px solid ${T.chalkDim}`, overflowY: "auto",
           padding: "10px 0", flexShrink: 0, background: "rgba(0,0,0,.26)",
         }}>
+          <button className="game-btn" onClick={() => setSelected(null)} style={{
+            width: "100%", textAlign: "left", padding: "8px 12px", cursor: "pointer",
+            background: !selected ? "rgba(255,199,44,.15)" : "transparent",
+            border: `1px solid ${!selected ? T.gold : "transparent"}`,
+            borderLeft: `3px solid ${!selected ? T.gold : "transparent"}`,
+            borderRadius: 3, color: T.ink, marginBottom: 6,
+            fontFamily: "'Barlow Condensed',sans-serif", fontSize: 15,
+            fontWeight: 700, letterSpacing: 1.2,
+          }}>📋 EDGE BOARD</button>
+
           <div style={{
             padding: "0 12px 8px", fontSize: 9.5, color: T.inkFaint,
             letterSpacing: 1.4, fontWeight: 600,
@@ -1166,25 +1427,19 @@ function App() {
         </div>
 
         <div style={{ flex: 1, overflowY: "auto", padding: 18 }}>
-          {!selected && !loading && (
-            <div style={{
-              display: "flex", flexDirection: "column", alignItems: "center",
-              justifyContent: "center", height: "100%", gap: 11, textAlign: "center",
-            }}>
-              <div style={{ fontSize: 46 }}>🏈</div>
-              <div style={{
-                fontFamily: "'Barlow Condensed',sans-serif", fontSize: 26, fontWeight: 700,
-                letterSpacing: 2.5, color: T.chalk,
-                textShadow: `0 2px 0 ${T.leatherDark}`,
-              }}>SELECT A GAME</div>
-              <div style={{ color: T.inkDim, fontSize: 12, maxWidth: 340, lineHeight: 1.6 }}>
-                Season production and a projected line for every skill player and defender,
-                adjusted for the defense they're facing.
-              </div>
-              {!league && <div style={{ color: T.inkFaint, fontSize: 11 }}>Loading league defensive ranks…</div>}
-            </div>
+          {!league && (
+            <div className="pulsing" style={{
+              textAlign: "center", padding: 60, color: T.inkDim,
+              fontFamily: "'Barlow Condensed',sans-serif", fontSize: 17, letterSpacing: 2.5,
+            }}>LOADING LEAGUE DEFENSIVE RANKS…</div>
           )}
-          {selected && <GameView key={selected.id} game={selected} league={league} />}
+          {league && !selected && (
+            <Scanner scan={scan} scanning={scanning} progress={progress} league={league}
+              week={week} onOpen={setSelected} onRescan={() => doScan(true)} />
+          )}
+          {league && selected && (
+            <GameView key={selected.id} game={selected} league={league} onBack={() => setSelected(null)} />
+          )}
         </div>
       </div>
     </div>

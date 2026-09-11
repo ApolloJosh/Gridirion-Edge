@@ -74,6 +74,66 @@ Carried over from the MLB build, where a long debugging session was spent on ID 
 (Harold Castro, an infielder) while trying to diagnose Seth Lugo's pitching splits
 (actual ID 607625). Check the name that comes back before assuming the endpoint is broken.
 
+## 8. The bulk endpoint — the whole league in one request
+
+```
+https://site.web.api.espn.com/apis/common/v3/sports/football/nfl/statistics/byathlete
+  ?region=us&lang=en&contentorigin=espn&isqualified=false
+  &season={year}&seasontype=2&page=1&limit={n}&sort={category.field}:desc
+```
+
+Verified: `limit=250` returns 250 athletes, all 32 teams represented, every stat category
+attached. This is what makes the Edge Board possible — scanning the slate by roster would be
+roughly 2,000 athlete calls; five sorted pulls here cover the league in about two seconds.
+
+Sorts in use: `passing.passingYards:desc`, `receiving.receivingYards:desc`,
+`rushing.rushingYards:desc`, `defensive.totalTackles:desc`, `defensive.sacks:desc`.
+Players appear in several pulls, so de-duplicate by athlete id.
+
+**Its shape differs from the per-athlete feed.** Each athlete's `categories[]` carry a
+`values` array with no field names on it; the schema lives at the **response** level in
+`categories[].names`. Zip them by position:
+
+```js
+const schema = {};
+(d.categories || []).forEach(c => { schema[c.name] = c.names || []; });
+// then per athlete category: schema[c.name][i] -> c.values[i]
+```
+
+`count` and `pageCount` come back undefined and `pagination` is an empty object — page by
+asking for a bigger `limit` rather than trusting a page count.
+
+### 8a. Verified defensive field names
+
+```
+general:                 gamesPlayed, fumblesForced, fumblesRecovered, fumblesTouchdowns
+defensive:               soloTackles, assistTackles, totalTackles, sacks, sackYards,
+                         tacklesForLoss, passesDefended, longInterception
+defensiveinterceptions:  interceptions, interceptionYards, interceptionTouchdowns
+```
+
+Note the casing: the bulk feed spells it **`defensiveinterceptions`** (all lowercase) while
+the team-level feed uses `defensiveInterceptions`. `statOf()` is therefore case-insensitive.
+
+It is also **scoped**, and that matters more than the casing: `interceptions` means *thrown*
+picks inside `passing` and *caught* picks inside `defensiveinterceptions`. Reading it
+globally would credit a quarterback's giveaways to a safety.
+
+## 9. The bulk feed reports the team a player played for THAT SEASON
+
+Not his current team. Combined with the season fallback (§ below), that means a scan run in
+September is filing players under last year's rosters. Measured at Week 1 of 2026: **157 of
+684 players in the slate had changed teams** — 23% of the board would have been matched
+against the wrong defense.
+
+The Edge Board fixes this by fetching the 32 current rosters for the week's games and
+building an `athleteId → current team` map that overrides the stats feed. Players whose
+production came with another team are tagged `stats w/ {OLD}` on the row, because the
+production itself is still from a different offense and deserves a second look.
+
+Spot-verified at Week 1 2026: Travis Etienne Jr. → NO, Kenny Gainwell → TB,
+Wan'Dale Robinson → TEN, all confirmed against the live roster endpoint.
+
 ## Season rollover
 
 In early September the new season exists on the scoreboard but every stat endpoint still

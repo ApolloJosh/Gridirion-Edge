@@ -6,8 +6,24 @@ Sister project to [Diamond Edge](https://github.com/ApolloJosh/diamond-edge) (ML
 
 ## What it does
 
-Pulls live data from ESPN's public NFL API and, for every player on the slate, separates
-**what he has actually done** from **what to expect this week**:
+### Edge Board (home)
+
+Opens on a scan of the **entire slate** — every game, every qualifying player — ranked by
+EDGE score, with the **top 10 at each position**: QB, RB, WR, TE and DEF. Click any row to
+drop into that game's full matchup breakdown.
+
+The scan reads the whole league in about two seconds using ESPN's bulk stats endpoint
+(five requests instead of ~2,000), reconciles offseason team changes against current
+rosters, pulls per-game weather, and scores every player through the same engine the
+matchup cards use — so a player's EDGE is identical in both views by construction.
+
+Qualifiers need 6+ games and meaningful volume, so one-game wonders stay off the board.
+Bye teams are excluded automatically.
+
+### Matchup view
+
+For every player on the slate, it separates **what he has actually done** from **what to
+expect this week**:
 
 - **Season block** — real production, color-graded against fixed tiers
 - **Projected line** — that season baseline run through a chain of matchup factors,
@@ -86,7 +102,6 @@ falls back automatically, and labels which season each stat came from.
 
 ## Roadmap
 
-- [ ] Verify defensive athlete stat field names against a live response (see api-notes §8)
 - [ ] Model the kickoff-window / game-script factor
 - [ ] Defense vs archetype (needs a charting data source — PFF, Sports Info Solutions)
 - [ ] True yards allowed by position (requires aggregating opponent box scores)
