@@ -74,38 +74,113 @@ Carried over from the MLB build, where a long debugging session was spent on ID 
 (Harold Castro, an infielder) while trying to diagnose Seth Lugo's pitching splits
 (actual ID 607625). Check the name that comes back before assuming the endpoint is broken.
 
-## 8. UNVERIFIED — defensive athlete stat field names
+## 8. The bulk endpoint — the whole league in one request
 
-Everything above was probed against live responses. **This section was not.** ESPN was
-unreachable from both shells when the defensive-player feature was built, so the field names
-for individual defenders are inferred from the *team-level* feed, which does expose
-`totalTackles`, `soloTackles`, `sacks`, `passesDefended`, `tacklesForLoss` and a separate
-`defensiveInterceptions` category.
-
-Because of that, defensive stats are read through `statOf()`, which scans every category for
-a list of candidate names rather than trusting one:
-
-```js
-defStat(stats, ["totalTackles", "tackles", "combinedTackles"])
+```
+https://site.web.api.espn.com/apis/common/v3/sports/football/nfl/statistics/byathlete
+  ?region=us&lang=en&contentorigin=espn&isqualified=false
+  &season={year}&seasontype=2&page=1&limit={n}&sort={category.field}:desc
 ```
 
-Category order matters and is the reason the helper is scoped rather than global:
-`interceptions` means **thrown** picks inside `passing` and **caught** picks inside
-`defensiveInterceptions`. Defenders are restricted to `DEF_CATS` so a quarterback's
-interceptions can never be read as a defender's.
+Verified: `limit=250` returns 250 athletes, all 32 teams represented, every stat category
+attached. This is what makes the Edge Board possible — scanning the slate by roster would be
+roughly 2,000 athlete calls; five sorted pulls here cover the league in about two seconds.
 
-If all candidates miss, the card renders "—" and the section shows an explanatory note
-instead of breaking. **To verify:** fetch any defender's stats and print the category names
-and their `names` arrays —
+Sorts in use: `passing.passingYards:desc`, `receiving.receivingYards:desc`,
+`rushing.rushingYards:desc`, `defensive.totalTackles:desc`, `defensive.sacks:desc`.
+Players appear in several pulls, so de-duplicate by athlete id.
+
+**Its shape differs from the per-athlete feed.** Each athlete's `categories[]` carry a
+`values` array with no field names on it; the schema lives at the **response** level in
+`categories[].names`. Zip them by position:
 
 ```js
-const d = await (await fetch("https://site.web.api.espn.com/apis/common/v3/sports/football/nfl/athletes/{id}/stats")).json();
-d.categories.map(c => ({ name: c.name, fields: c.names }));
+const schema = {};
+(d.categories || []).forEach(c => { schema[c.name] = c.names || []; });
+// then per athlete category: schema[c.name][i] -> c.values[i]
 ```
 
-then fix the candidate lists in `statOf` calls if they differ. Also confirm whether
-`gamesPlayed` is present on a defensive category — without it the per-game rates fall back
-to showing season totals only.
+`count` and `pageCount` come back undefined and `pagination` is an empty object — page by
+asking for a bigger `limit` rather than trusting a page count.
+
+### 8a. Verified defensive field names
+
+```
+general:                 gamesPlayed, fumblesForced, fumblesRecovered, fumblesTouchdowns
+defensive:               soloTackles, assistTackles, totalTackles, sacks, sackYards,
+                         tacklesForLoss, passesDefended, longInterception
+defensiveinterceptions:  interceptions, interceptionYards, interceptionTouchdowns
+```
+
+Note the casing: the bulk feed spells it **`defensiveinterceptions`** (all lowercase) while
+the team-level feed uses `defensiveInterceptions`. `statOf()` is therefore case-insensitive.
+
+It is also **scoped**, and that matters more than the casing: `interceptions` means *thrown*
+picks inside `passing` and *caught* picks inside `defensiveinterceptions`. Reading it
+globally would credit a quarterback's giveaways to a safety.
+
+## 9. The bulk feed reports the team a player played for THAT SEASON
+
+Not his current team. Combined with the season fallback (§ below), that means a scan run in
+September is filing players under last year's rosters. Measured at Week 1 of 2026: **157 of
+684 players in the slate had changed teams** — 23% of the board would have been matched
+against the wrong defense.
+
+The Edge Board fixes this by fetching the 32 current rosters for the week's games and
+building an `athleteId → current team` map that overrides the stats feed. Players whose
+production came with another team are tagged `stats w/ {OLD}` on the row, because the
+production itself is still from a different offense and deserves a second look.
+
+Spot-verified at Week 1 2026: Travis Etienne Jr. → NO, Kenny Gainwell → TB,
+Wan'Dale Robinson → TEN, all confirmed against the live roster endpoint.
+
+## 10. Played games on the board, and the leakage guard
+
+ESPN's week endpoint returns the whole week, including games that have already finished —
+`competitions[].status.type.state` is `pre` | `in` | `post`. Two separate problems follow.
+
+**a) A finished game can't be bet.** At Week 1 of 2026, NE @ SEA and SF @ LAR were already
+final, and their players occupied four of the top slots on the board (Stafford 1st QB, Nacua
+1st WR, McCaffrey 2nd RB, Smith-Njigba 3rd WR) — 4 of 32 teams crowding out the 14 matchups
+still ahead. The board now defaults to `state === "pre"` with an "Include played games"
+toggle, and the sidebar shows FINAL with the score.
+
+**b) Data leakage, once stats come from the current season.** While the stat sample falls
+back a year, a completed game's result is *not* in the numbers. Verified at Week 1 2026: the
+board projected Puka Nacua for 117.6 receiving yards; in the game that had already been
+played he had 74. The projection didn't move toward the result, because it was built from his
+2025 per-game (107.2) times the SF matchup multiplier.
+
+That stops being true the moment `seasonHasSample()` flips to the current season (around Week
+5). From then on, any `post` game on the board is being "projected" using a sample that
+already contains its result — the projection is partly predicting an outcome it was fed.
+`runScan()` therefore tags each row:
+
+```js
+leakage: league.season === year && meta.game.state === "post"
+```
+
+and those rows render a "result is in the stat sample" warning. The guard is deliberately
+narrow: it fires only when the stat season and the scanned season match, so the honest
+fallback case isn't flagged as dirty.
+
+## 11. Two self-inflicted bugs worth not repeating
+
+**The response cache had no expiry.** Every fetch was memoised by URL for the life of the
+page, so the Rescan button re-ran the whole pipeline and got byte-identical cached data back
+— it could not change anything, ever. Worse, a game flipping from `pre` to `post` while the
+page sat open would never be noticed. Entries now expire after 5 minutes and a forced rescan
+calls `clearCache()` first.
+
+**The played-game filter trusted a single field.** `state === "post"` is correct (verified),
+but if that one key were ever absent the filter fails *open* — finished games quietly return
+to the board and nothing looks broken. `hasStarted()` now takes three independent signals:
+`state` (`post`/`in`), `status.type.completed`, and kickoff timestamp vs now. Unit-tested
+including a degraded feed with `state` and `completed` stripped, where the kickoff time alone
+still catches both finished games.
+
+Related: the header carries a `BUILD` stamp. Diagnosing "I updated the file but nothing
+changed" without one is guesswork — bump it on every change.
 
 ## Season rollover
 

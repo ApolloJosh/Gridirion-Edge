@@ -20,6 +20,13 @@ matchup cards use — so a player's EDGE is identical in both views by construct
 Qualifiers need 6+ games and meaningful volume, so one-game wonders stay off the board.
 Bye teams are excluded automatically.
 
+**Games already played are excluded by default.** A finished game can't be bet, and its
+players would otherwise sit on the board all week crowding out the matchups still ahead of
+you. An "Include played games" toggle brings them back, marked FINAL. Separately, if the
+stat sample is from the same season as a completed game, that row is flagged
+*result is in the stat sample* — the projection would be partly built from the outcome it
+claims to predict. See [api-notes §10](docs/api-notes.md).
+
 ### Matchup view
 
 For every player on the slate, it separates **what he has actually done** from **what to
@@ -84,7 +91,14 @@ generator, then price it against your book's actual number.
 ## How to use it
 
 Open `index.html` in any browser. No build step, no install, no account, no API key.
-Requires an internet connection to pull live ESPN data.
+Requires an internet connection to pull live ESPN data. Works on phones.
+
+**Check the build stamp.** The header shows a version (e.g. `v4 · 2026-09-11`). If it doesn't
+match the build you just updated to, you're looking at a cached or older copy — hard-reload
+(⌘⇧R), and if you're on GitHub Pages give it a minute to publish.
+
+**Rescan** drops every cached API response and re-pulls. Normal navigation reuses responses
+for 5 minutes, so game states refresh on their own without hammering ESPN.
 
 ## Design
 

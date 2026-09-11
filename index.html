@@ -42,10 +42,67 @@ select:hover{border-color:var(--gold);}
 .hash{background-image:repeating-linear-gradient(90deg,var(--chalk-faint) 0 10px,transparent 10px 26px);height:2px;width:100%;}
 @keyframes pulse{0%,100%{opacity:.45}50%{opacity:1}}
 .pulsing{animation:pulse 1.3s ease-in-out infinite;}
+
+/* ---------------------------------------------------------------- *
+ * Mobile. Inline styles win over plain rules, so overrides here use
+ * !important by necessity rather than by preference.
+ * ---------------------------------------------------------------- */
+
+/* iOS: 100vh includes the collapsing address bar, so the bottom of the
+   app gets cut off. dvh tracks the visible viewport. */
+@supports (height:100dvh){ .gx-app{height:100dvh!important;} }
+html,body{max-width:100%;overflow-x:hidden;}
+.gx-side,.gx-main{-webkit-overflow-scrolling:touch;}
+
 @media (max-width:860px){
   .gx-shell{flex-direction:column!important;}
-  .gx-side{width:100%!important;max-height:184px;border-right:none!important;
-    border-bottom:2px solid var(--chalk-dim)!important;}
+
+  /* The sideline becomes a horizontal strip of game chips. A 184px-tall
+     vertical list ate a quarter of a phone screen before anything useful. */
+  .gx-side{
+    width:100%!important;max-height:none!important;
+    display:flex!important;flex-direction:row!important;
+    overflow-x:auto!important;overflow-y:hidden!important;
+    gap:6px;padding:8px 10px!important;
+    border-right:none!important;border-bottom:2px solid var(--chalk-dim)!important;
+    scroll-snap-type:x proximity;
+  }
+  .gx-side > button{
+    width:auto!important;flex:0 0 auto!important;min-width:118px;
+    margin-bottom:0!important;scroll-snap-align:start;
+  }
+  /* Bye list and section labels are noise in a horizontal rail. */
+  .gx-side > div{display:none!important;}
+
+  .gx-main{padding:13px!important;}
+  .gx-header{padding:9px 13px!important;gap:9px!important;}
+  .gx-tagline{display:none!important;}
+  .gx-controls{width:100%;margin-left:0!important;}
+  .gx-controls select{flex:1 1 0;min-height:38px;}
+
+  /* 16px keeps iOS Safari from zooming in when a select is focused. */
+  select{font-size:16px!important;}
+
+  /* Tabs scroll sideways instead of wrapping onto three cramped lines. */
+  .gx-tabs{flex-wrap:nowrap!important;overflow-x:auto;padding-bottom:4px;}
+  .gx-tabs > button{flex:0 0 auto;min-height:40px;}
+  .gx-tabs > label{flex:0 0 auto;}
+
+  /* Even columns beat ragged flex-wrap once the row is narrow. */
+  .gx-statgrid{
+    display:grid!important;
+    grid-template-columns:repeat(auto-fill,minmax(74px,1fr))!important;
+    gap:12px 10px!important;
+  }
+}
+
+@media (max-width:560px){
+  /* Board rows restack: identity on top, numbers underneath. */
+  .scan-row{flex-wrap:wrap!important;padding:11px 12px!important;}
+  .gx-row-main{flex:1 1 100%!important;order:1;}
+  .gx-row-proj{order:2;text-align:left!important;min-width:0!important;flex:1 1 auto;}
+  .gx-row-score{order:3;min-width:0!important;flex:0 0 auto;}
+  .gx-statgrid{grid-template-columns:repeat(auto-fill,minmax(68px,1fr))!important;}
 }
 </style>
 </head>
@@ -72,6 +129,10 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
  *  - interceptions means THROWN picks in `passing` and CAUGHT picks in
  *    `defensiveinterceptions` — always scope the category before reading it
  * ==================================================================== */
+
+/* Bump on every change. Shown in the header so "am I actually running the new
+   file?" is answerable at a glance instead of by guesswork. */
+const BUILD = "v4 · 2026-09-11";
 
 const ESPN      = "https://site.api.espn.com/apis/site/v2/sports/football/nfl";
 const ESPN_V2   = "https://site.api.espn.com/apis/v2/sports/football/nfl";
@@ -106,15 +167,26 @@ const DEF_POS = ["DE", "DT", "NT", "LB", "OLB", "ILB", "MLB", "CB", "S", "FS", "
 
 /* ------------------------------ plumbing ------------------------------ */
 
+/**
+ * Response cache. It used to be permanent, which quietly broke Rescan: the
+ * button re-ran every step but each fetch was served from this map, so nothing
+ * could ever change — including a game flipping from "pre" to "post" while the
+ * page sat open. Entries now expire, and a forced rescan clears them outright.
+ */
+const CACHE_TTL_MS = 5 * 60 * 1000;
 const _cache = new Map();
+
+function clearCache() { _cache.clear(); }
+
 async function fetchJSON(url) {
-  if (_cache.has(url)) return _cache.get(url);
+  const hit = _cache.get(url);
+  if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.p;
   const p = (async () => {
     const r = await fetch(url);
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     return r.json();
   })();
-  _cache.set(url, p);
+  _cache.set(url, { p, at: Date.now() });
   p.catch(() => _cache.delete(url));
   return p;
 }
@@ -201,12 +273,27 @@ async function getSchedule(year, week, seasonType) {
     return {
       id: ev.id, name: ev.shortName || ev.name, date: ev.date,
       status: comp.status?.type?.description, state: comp.status?.type?.state,
+      completed: comp.status?.type?.completed,
       venue: comp.venue?.fullName, indoor: comp.venue?.indoor,
       home: side(home), away: side(away),
     };
   });
   games.sort((a, b) => new Date(a.date) - new Date(b.date));
   return { games, byes: (d.week?.teamsOnBye || []).map((t) => t.abbreviation) };
+}
+
+/**
+ * Has this game already kicked off? Deliberately belt-and-braces: three
+ * independent signals, any one of which is enough. An earlier build trusted
+ * `state` alone, and a single missing field would have silently put finished
+ * games back on the board — the failure is invisible, so don't rely on one key.
+ */
+function hasStarted(g) {
+  if (!g) return false;
+  if (g.state === "post" || g.state === "in") return true;
+  if (g.completed === true) return true;
+  const t = new Date(g.date).getTime();
+  return !isNaN(t) && t <= Date.now();
 }
 
 /* --------------------- league defensive context --------------------- */
@@ -713,11 +800,23 @@ async function runScan({ year, week, seasonType, league, onProgress }) {
     rows.push({
       player: p, kind, pos: p.pos, team: p.team, opp: meta.opp, home: meta.home,
       moved: p.moved, game: meta.game, analysis: a, score: a.score,
+      state: meta.game.state || "pre",
+      started: hasStarted(meta.game),
+      /* LEAKAGE GUARD: if the stat sample is from the same season as a game
+         that has already been played, the projection is partly built from the
+         result it claims to predict. Flag it; never present it as clean. */
+      leakage: league.season === year && hasStarted(meta.game),
     });
   }
 
   rows.sort((a, b) => b.score - a.score);
-  return { rows, games, byes, season: league.season };
+  const started = games.filter(hasStarted);
+  const played = started.filter((g) => g.state === "post" || g.completed).length;
+  const live = started.length - played;
+  return {
+    rows, games, byes, season: league.season, played, live,
+    statYear: league.season, scanYear: year, scannedAt: Date.now(),
+  };
 }
 
 /* ------------------------------ UI atoms ------------------------------ */
@@ -875,7 +974,7 @@ function PlayerCard({ p, kind, ctx }) {
             <div style={{ fontSize: 9, letterSpacing: 1.4, color: T.inkFaint, fontWeight: 600, marginBottom: 8 }}>
               SEASON — WHAT HE'S ACTUALLY DONE
             </div>
-            <div style={{ display: "flex", gap: 18, flexWrap: "wrap" }}>
+            <div className="gx-statgrid" style={{ display: "flex", gap: 18, flexWrap: "wrap" }}>
               {a.seasonCells.map((c, i) => <Stat key={i} {...c} />)}
             </div>
           </div>
@@ -893,7 +992,7 @@ function PlayerCard({ p, kind, ctx }) {
                 season baseline × {a.projected._mult.toFixed(3)}
               </span>
             </div>
-            <div style={{ display: "flex", gap: 22, flexWrap: "wrap" }}>
+            <div className="gx-statgrid" style={{ display: "flex", gap: 22, flexWrap: "wrap" }}>
               {a.projLabels.map((l) => (
                 <ProjStat key={l.key} label={l.label}
                   value={isNaN(a.projected[l.key]) ? "—" : a.projected[l.key].toFixed(l.d)}
@@ -935,7 +1034,7 @@ function ScanRow({ rank, row, onOpen }) {
         color: rank <= 3 ? T.gold : T.inkFaint, minWidth: 22, textAlign: "right",
       }}>{rank}</span>
 
-      <div style={{ minWidth: 0, flex: "1 1 190px" }}>
+      <div className="gx-row-main" style={{ minWidth: 0, flex: "1 1 190px" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap" }}>
           <span style={{ fontWeight: 600, fontSize: 13, color: T.chalk }}>{row.player.name}</span>
           <span style={{ fontSize: 10, color: T.inkFaint }}>
@@ -943,6 +1042,9 @@ function ScanRow({ rank, row, onOpen }) {
           </span>
         </div>
         <div style={{ display: "flex", gap: 6, marginTop: 4, flexWrap: "wrap" }}>
+          {row.started && row.state !== "in" && <Badge label="FINAL — not bettable" tone="cold" icon="🔒" />}
+          {row.state === "in" && <Badge label="IN PROGRESS" tone="cool" icon="●" />}
+          {row.leakage && <Badge label="result is in the stat sample" tone="cold" icon="⚠" />}
           {a.archetype && <Badge label={a.archetype} tone="leather" />}
           {row.moved && <Badge label={`stats w/ ${row.moved}`} tone="cool" icon="⇄" />}
           {defFactor && <Badge label={defFactor.label} tone={defFactor.mult > 1.02 ? "warm" : defFactor.mult < 0.98 ? "cool" : "neutral"} />}
@@ -950,14 +1052,14 @@ function ScanRow({ rank, row, onOpen }) {
         </div>
       </div>
 
-      <div style={{ textAlign: "right", minWidth: 88 }}>
+      <div className="gx-row-proj" style={{ textAlign: "right", minWidth: 88 }}>
         <div style={{ fontSize: 9, color: "#e8c9ac", letterSpacing: .5 }}>{head?.label || "PROJ"}</div>
         <div style={{
           fontFamily: "'Barlow Condensed',sans-serif", fontSize: 21, fontWeight: 700, color: T.gold,
         }}>{headVal}</div>
       </div>
 
-      <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 130, justifyContent: "flex-end" }}>
+      <div className="gx-row-score" style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 130, justifyContent: "flex-end" }}>
         <span style={{
           fontFamily: "'Barlow Condensed',sans-serif", fontSize: 25, fontWeight: 700,
           color: TONES[a.verdict.tone].fg, lineHeight: 1,
@@ -970,17 +1072,24 @@ function ScanRow({ rank, row, onOpen }) {
 
 function Scanner({ scan, scanning, progress, league, week, onOpen, onRescan }) {
   const [tab, setTab] = useState("QB");
-  const rows = scan?.rows || [];
+  const [includePlayed, setIncludePlayed] = useState(false);
+  const allRows = scan?.rows || [];
   const active = SCAN_TABS.find((t) => t.key === tab);
-  const top = useMemo(
-    () => rows.filter(active.match).slice(0, 10),
-    [rows, tab]
+
+  /* Default to games that haven't kicked off. A finished game can't be bet, and
+     its players would otherwise sit on the board all week crowding out the
+     matchups still ahead of you. */
+  const rows = useMemo(
+    () => (includePlayed ? allRows : allRows.filter((r) => !r.started)),
+    [allRows, includePlayed]
   );
+  const top = useMemo(() => rows.filter(active.match).slice(0, 10), [rows, tab]);
   const counts = useMemo(() => {
     const c = {};
     SCAN_TABS.forEach((t) => { c[t.key] = rows.filter(t.match).length; });
     return c;
   }, [rows]);
+  const hiddenCount = allRows.length - rows.length;
 
   return (
     <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
@@ -993,14 +1102,34 @@ function Scanner({ scan, scanning, progress, league, week, onOpen, onRescan }) {
           WEEK {week} <span style={{ color: T.gold }}>EDGE BOARD</span>
         </div>
         <div style={{ fontSize: 11.5, color: T.inkDim, marginTop: 3 }}>
-          Top 10 rated edges at each position across the full slate
+          Top 10 rated edges at each position
           {scan?.games ? ` · ${scan.games.length} games` : ""}
           {league?.season ? ` · ${league.season} stats` : ""}
+          {scan && scan.statYear !== scan.scanYear && (
+            <span style={{ color: T.gold }}> (prior season — {scan.scanYear} has no usable sample yet)</span>
+          )}
         </div>
+
+        {/* Played-games notice: the distortion Josh spotted, made explicit. */}
+        {scan && (scan.played > 0 || scan.live > 0) && (
+          <div style={{
+            marginTop: 9, padding: "8px 11px", borderRadius: 4, fontSize: 11,
+            background: "rgba(107,52,16,.34)", border: `1px solid rgba(139,74,28,.7)`,
+            color: "#f0c9a8", lineHeight: 1.55,
+          }}>
+            {scan.played > 0 && <><strong>{scan.played} game{scan.played > 1 ? "s" : ""} already final</strong></>}
+            {scan.played > 0 && scan.live > 0 && " · "}
+            {scan.live > 0 && <><strong>{scan.live} in progress</strong></>}
+            {" — "}
+            {includePlayed
+              ? "shown below and marked. Those matchups can't be bet."
+              : `hidden from the board (${hiddenCount} player${hiddenCount === 1 ? "" : "s"} excluded).`}
+          </div>
+        )}
       </div>
 
       {/* position tabs */}
-      <div style={{ display: "flex", gap: 7, marginBottom: 14, flexShrink: 0, flexWrap: "wrap" }}>
+      <div className="gx-tabs" style={{ display: "flex", gap: 7, marginBottom: 14, flexShrink: 0, flexWrap: "wrap" }}>
         {SCAN_TABS.map((t) => (
           <button key={t.key} onClick={() => setTab(t.key)} style={{
             padding: "7px 16px", fontSize: 13, fontWeight: 700, borderRadius: 3, cursor: "pointer",
@@ -1014,8 +1143,17 @@ function Scanner({ scan, scanning, progress, league, week, onOpen, onRescan }) {
             <span style={{ opacity: .65, fontSize: 10, marginLeft: 6 }}>{counts[t.key] || 0}</span>
           </button>
         ))}
+        <label style={{
+          marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 6,
+          fontSize: 11, color: T.inkDim, cursor: "pointer", userSelect: "none",
+        }}>
+          <input type="checkbox" checked={includePlayed}
+            onChange={(e) => setIncludePlayed(e.target.checked)}
+            style={{ accentColor: T.gold, cursor: "pointer" }} />
+          Include played games
+        </label>
         <button onClick={onRescan} disabled={scanning} style={{
-          marginLeft: "auto", padding: "7px 14px", fontSize: 11, fontWeight: 600, borderRadius: 3,
+          padding: "7px 14px", fontSize: 11, fontWeight: 600, borderRadius: 3,
           cursor: scanning ? "default" : "pointer", background: "rgba(0,0,0,.3)",
           color: scanning ? T.inkFaint : T.ink, border: `1px solid ${T.chalkDim}`,
         }}>{scanning ? "Scanning…" : "↻ Rescan"}</button>
@@ -1323,6 +1461,9 @@ function App() {
     const key = `${year}-${week}-${seasonType}-${league.season}`;
     if (!force && scanKey.current === key) return;
     scanKey.current = key;
+    /* A forced rescan must drop cached responses, otherwise every fetch is
+       served from memory and the button does nothing visible. */
+    if (force) clearCache();
     setScanning(true); setScan(null);
     try {
       const result = await runScan({
@@ -1340,10 +1481,10 @@ function App() {
   const weeks = seasonType === 2 ? 18 : 5;
 
   return (
-    <div className="field" style={{
+    <div className="field gx-app" style={{
       fontFamily: "'Inter',sans-serif", height: "100vh", display: "flex", flexDirection: "column",
     }}>
-      <div style={{
+      <div className="gx-header" style={{
         padding: "11px 18px", display: "flex", alignItems: "center", gap: 14,
         background: "linear-gradient(180deg, rgba(10,45,26,.95), rgba(10,45,26,.72))",
         borderBottom: `2px solid ${T.chalk}`, flexShrink: 0, flexWrap: "wrap",
@@ -1354,10 +1495,14 @@ function App() {
           letterSpacing: 2.5, color: T.gold, cursor: "pointer",
           textShadow: `0 2px 0 ${T.leatherDark}, 0 4px 10px rgba(0,0,0,.55)`,
         }}>🏈 GRIDIRON EDGE</div>
-        <div style={{ color: T.inkDim, fontSize: 10, letterSpacing: 1.4, paddingTop: 3 }}>
+        <div className="gx-tagline" style={{ color: T.inkDim, fontSize: 10, letterSpacing: 1.4, paddingTop: 3 }}>
           NFL MATCHUP ANALYSIS · APOLLO MEDIA
         </div>
-        <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" }}>
+        <div title="Build version — check this after updating the file" style={{
+          fontSize: 9, color: T.inkFaint, border: `1px solid ${T.chalkFaint}`,
+          borderRadius: 3, padding: "2px 6px", letterSpacing: .5, whiteSpace: "nowrap",
+        }}>{BUILD}</div>
+        <div className="gx-controls" style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" }}>
           <select value={seasonType} onChange={(e) => { setSeasonType(+e.target.value); setWeek(1); }}>
             <option value={2}>Regular season</option>
             <option value={3}>Postseason</option>
@@ -1405,15 +1550,23 @@ function App() {
                 borderRadius: 3, padding: "8px 12px", cursor: "pointer",
                 color: T.ink, marginBottom: 1, fontFamily: "'Inter',sans-serif",
               }}>
-                <div style={{ fontSize: 13, fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}>
+                <div style={{
+                  fontSize: 13, fontWeight: 600, display: "flex", alignItems: "center", gap: 6,
+                  opacity: g.state === "post" ? .55 : 1,
+                }}>
                   {g.away.abbr} <span style={{ color: T.inkFaint, fontSize: 10.5, fontWeight: 400 }}>at</span> {g.home.abbr}
                   {g.state === "in" && <span style={{
                     width: 6, height: 6, borderRadius: "50%", background: T.gold, display: "inline-block",
                   }}/>}
+                  {g.state === "post" && <span style={{ fontSize: 9, color: T.inkFaint }}>🔒</span>}
                 </div>
                 <div style={{ fontSize: 10, color: T.inkFaint, marginTop: 2 }}>
-                  {d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}
-                  {" · "}{d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}
+                  {g.state === "post"
+                    ? `FINAL ${g.away.score}–${g.home.score}`
+                    : <>
+                        {d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}
+                        {" · "}{d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}
+                      </>}
                 </div>
               </button>
             );
@@ -1426,7 +1579,7 @@ function App() {
           )}
         </div>
 
-        <div style={{ flex: 1, overflowY: "auto", padding: 18 }}>
+        <div className="gx-main" style={{ flex: 1, overflowY: "auto", padding: 18 }}>
           {!league && (
             <div className="pulsing" style={{
               textAlign: "center", padding: 60, color: T.inkDim,
