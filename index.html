@@ -4,21 +4,54 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 <title>Gridiron Edge · NFL Matchup Analysis</title>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Barlow+Condensed:wght@400;600;700&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Barlow+Condensed:wght@400;600;700&display=swap" rel="stylesheet"/>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
 <style>
+:root{
+  --turf:#14512f; --turf-dark:#0e3b22; --turf-deep:#0a2d1a; --turf-light:#1a6139;
+  --chalk:#ffffff; --chalk-dim:rgba(255,255,255,.38); --chalk-faint:rgba(255,255,255,.14);
+  --gold:#ffc72c; --gold-deep:#e0a413;
+  --leather:#6b3410; --leather-dark:#43200a; --leather-mid:#8b4a1c;
+  --ink:#f2f7f3; --ink-dim:#b6cdbd; --ink-faint:#7fa38c;
+}
 *{box-sizing:border-box;margin:0;padding:0;}
-body{background:#0b0f0e;color:#e8ede9;font-family:'Inter',sans-serif;overflow:hidden;}
-::-webkit-scrollbar{width:5px;height:5px;}
-::-webkit-scrollbar-track{background:#0b0f0e;}
-::-webkit-scrollbar-thumb{background:#1c2b22;border-radius:3px;}
-.game-btn:hover{border-color:#4ade80!important;background:#111a13!important;}
-.row-hover:hover{background:#111a13!important;}
-select{background:#131a14;color:#e8ede9;border:1px solid #1c2b22;border-radius:4px;padding:5px 8px;font-family:'Inter',sans-serif;font-size:11px;outline:none;cursor:pointer;}
-select:hover{border-color:#4ade80;}
-@media (max-width:820px){.gx-shell{flex-direction:column!important;}.gx-side{width:100%!important;max-height:190px;border-right:none!important;border-bottom:1px solid #1c2b22;}}
+body{
+  color:var(--ink); font-family:'Inter',sans-serif; overflow:hidden;
+  background:var(--turf-deep);
+}
+/* Field: alternating mow stripes + 5-yard chalk lines */
+.field{
+  background-color:var(--turf);
+  background-image:
+    repeating-linear-gradient(90deg, rgba(255,255,255,.055) 0 2px, rgba(255,255,255,0) 2px 88px),
+    repeating-linear-gradient(90deg, rgba(0,0,0,.10) 0 44px, rgba(0,0,0,0) 44px 88px),
+    linear-gradient(180deg, rgba(0,0,0,.30), rgba(0,0,0,.05) 30%, rgba(0,0,0,.38));
+}
+::-webkit-scrollbar{width:9px;height:9px;}
+::-webkit-scrollbar-track{background:rgba(0,0,0,.22);}
+::-webkit-scrollbar-thumb{background:var(--leather);border-radius:5px;border:2px solid rgba(0,0,0,.2);}
+::-webkit-scrollbar-thumb:hover{background:var(--leather-mid);}
+.game-btn{transition:background .12s,border-color .12s,transform .12s;}
+.game-btn:hover{border-color:var(--gold)!important;background:rgba(255,199,44,.10)!important;}
+.card{transition:box-shadow .15s,transform .15s;}
+.card:hover{box-shadow:0 3px 0 var(--leather-dark),0 10px 22px rgba(0,0,0,.42);}
+select{
+  background:var(--turf-dark);color:var(--ink);border:1px solid var(--chalk-dim);
+  border-radius:3px;padding:5px 9px;font-family:'Inter',sans-serif;font-size:11px;
+  font-weight:500;outline:none;cursor:pointer;
+}
+select:hover{border-color:var(--gold);}
+.hash{
+  background-image:repeating-linear-gradient(90deg,var(--chalk-faint) 0 10px,transparent 10px 26px);
+  height:2px;width:100%;
+}
+@media (max-width:860px){
+  .gx-shell{flex-direction:column!important;}
+  .gx-side{width:100%!important;max-height:184px;border-right:none!important;
+    border-bottom:2px solid var(--chalk-dim)!important;}
+}
 </style>
 </head>
 <body>
@@ -26,46 +59,44 @@ select:hover{border-color:#4ade80;}
 <script type="text/babel">
 const { useState, useEffect, useMemo, useRef } = React;
 
-/* ------------------------------------------------------------------ *
- * Gridiron Edge — NFL matchup analysis
- * Apollo Media. Data: ESPN public APIs (no key required).
- *
- * Endpoint notes (all verified returning real data):
- *   scoreboard  site.api.espn.com/apis/site/v2/.../scoreboard?seasontype&week&dates
- *   standings   site.api.espn.com/apis/v2/sports/football/nfl/standings?season=
- *   team+roster site.api.espn.com/apis/site/v2/.../teams/{id}?enable=roster
- *   athlete     site.web.api.espn.com/apis/common/v3/.../athletes/{id}/stats
- *   team stats  sports.core.api.espn.com/v2/.../seasons/{y}/types/2/teams/{id}/statistics
- *   summary     site.api.espn.com/apis/site/v2/.../summary?event={id}  (weather + injuries)
+/* ==================================================================== *
+ * Gridiron Edge — NFL matchup analysis · Apollo Media
+ * Data: ESPN public APIs (no key). See docs/api-notes.md.
  *
  * VERIFIED TRAPS — do not "fix" these back:
- *   - team.athletes from ?enable=roster is a FLAT array of athletes,
- *     NOT groups with .items. Iterating group.items yields zero players.
- *   - athlete stats live at json.categories[].statistics[], each entry a
- *     SEASON whose .stats array is positionally parallel to category .names.
- *     There is no json.splits.categories[].stats.
- *   - core team "defensive" category exposes yardsAllowed and pointsAllowed
- *     but both return 0 for all 32 teams while responding HTTP 200.
- *     Real points-allowed comes from the standings endpoint instead.
- *   - the /teams list endpoint is NOT CORS-open; it fails from file://.
- *     Team id/abbr map is built from standings.
- *   - weather lives at summary.gameInfo.weather and has temperature +
- *     gust, but NO windSpeed field.
- * ------------------------------------------------------------------ */
+ *  - team.athletes (?enable=roster) is a FLAT array, not groups with .items
+ *  - athlete stats are categories[].statistics[], each entry ONE SEASON whose
+ *    .stats array is positionally parallel to the category .names array
+ *  - core "defensive" yardsAllowed / pointsAllowed are 0 for all 32 teams
+ *    while returning HTTP 200 — real points allowed comes from standings
+ *  - the /teams list endpoint is NOT CORS-open; build the map from standings
+ *  - weather has temperature + gust but NO windSpeed field
+ *  - Week 1 fallback must test the MEDIAN team's games played, not the sum
+ *
+ * UNVERIFIED (flagged): defensive athlete stat field names. The team-level
+ * feed exposes totalTackles / soloTackles / sacks / passesDefended /
+ * tacklesForLoss and a separate defensiveInterceptions category, so the same
+ * names are expected on athletes — but that was not probed live. statOf()
+ * therefore scans every category for a list of candidate names instead of
+ * trusting one, and renders "—" rather than breaking if all miss.
+ * ==================================================================== */
 
 const ESPN      = "https://site.api.espn.com/apis/site/v2/sports/football/nfl";
 const ESPN_V2   = "https://site.api.espn.com/apis/v2/sports/football/nfl";
 const ESPN_WEB  = "https://site.web.api.espn.com/apis/common/v3/sports/football/nfl";
 const ESPN_CORE = "https://sports.core.api.espn.com/v2/sports/football/leagues/nfl";
 
-const C = {
-  bg: "#0b0f0e", panel: "#0f1510", card: "#131a14", border: "#1c2b22",
-  green: "#4ade80", greenSoft: "#86efac", red: "#f87171", redSoft: "#fca5a5",
-  yellow: "#fbbf24", blue: "#60a5fa", muted: "#4b6355", text: "#e8ede9", sub: "#7a9b83",
+const T = {
+  turf: "#14512f", turfDark: "#0e3b22", turfDeep: "#0a2d1a", turfLight: "#1a6139",
+  chalk: "#ffffff", chalkDim: "rgba(255,255,255,.38)", chalkFaint: "rgba(255,255,255,.14)",
+  gold: "#ffc72c", goldDeep: "#e0a413",
+  leather: "#6b3410", leatherDark: "#43200a", leatherMid: "#8b4a1c",
+  ink: "#f2f7f3", inkDim: "#b6cdbd", inkFaint: "#7fa38c",
+  good: "#b9e6a1", bad: "#ffab91", poor: "#ff6b5e",
 };
+const SHADOW = `0 2px 0 ${T.leatherDark}, 0 6px 16px rgba(0,0,0,.38)`;
+const SHADOW_SM = `0 2px 0 ${T.leatherDark}`;
 
-/* NFL divisions are stable; hardcoded so the divisional flag never depends
-   on a standings grouping level that may or may not be returned. */
 const DIVISION = {
   BUF:"AFC East", MIA:"AFC East", NE:"AFC East", NYJ:"AFC East",
   BAL:"AFC North", CIN:"AFC North", CLE:"AFC North", PIT:"AFC North",
@@ -77,7 +108,10 @@ const DIVISION = {
   ARI:"NFC West", LAR:"NFC West", SEA:"NFC West", SF:"NFC West",
 };
 
-/* ----------------------------- utilities ----------------------------- */
+const OFF_POS = ["QB", "RB", "FB", "WR", "TE"];
+const DEF_POS = ["DE", "DT", "NT", "LB", "OLB", "ILB", "MLB", "CB", "S", "FS", "SS", "DB", "EDGE"];
+
+/* ------------------------------ plumbing ------------------------------ */
 
 const _cache = new Map();
 async function fetchJSON(url) {
@@ -91,10 +125,8 @@ async function fetchJSON(url) {
   p.catch(() => _cache.delete(url));
   return p;
 }
-
 async function safeJSON(url) { try { return await fetchJSON(url); } catch { return null; } }
 
-/** Run async fn over items with bounded concurrency. */
 async function pool(items, limit, fn) {
   const out = new Array(items.length);
   let i = 0;
@@ -104,7 +136,6 @@ async function pool(items, limit, fn) {
   return out;
 }
 
-/** ESPN returns display strings like "2,267" and "—". */
 function num(v) {
   if (v === null || v === undefined) return NaN;
   const n = parseFloat(String(v).replace(/,/g, ""));
@@ -112,7 +143,6 @@ function num(v) {
 }
 const fmt = (v, d = 1) => (isNaN(num(v)) ? "—" : num(v).toFixed(d));
 const int = (v) => (isNaN(num(v)) ? "—" : String(Math.round(num(v))));
-
 function ordinal(n) {
   if (!n || isNaN(n)) return "—";
   const s = ["th", "st", "nd", "rd"], v = n % 100;
@@ -120,7 +150,7 @@ function ordinal(n) {
 }
 
 /* ------------------------------ grading ------------------------------ */
-/* thresholds = [elite, good, avg, bad]; returns elite|good|avg|bad|poor */
+
 function grade(val, thresholds, higherIsBetter = true) {
   const v = num(val);
   if (isNaN(v)) return null;
@@ -138,11 +168,12 @@ function grade(val, thresholds, higherIsBetter = true) {
   if (v <= bad) return "bad";
   return "poor";
 }
-const GRADE_COLOR = { elite: C.green, good: C.greenSoft, avg: C.text, bad: C.redSoft, poor: C.red };
-const gradeColor = (g) => (g ? GRADE_COLOR[g] : C.sub);
+/* On a green field, "good = green" reads poorly. Elite is gold, weak is clay. */
+const GRADE_COLOR = { elite: T.gold, good: T.good, avg: T.chalk, bad: T.bad, poor: T.poor };
+const gradeColor = (g) => (g ? GRADE_COLOR[g] : T.inkFaint);
 const GRADE_SCORE = { elite: 1, good: 0.75, avg: 0.5, bad: 0.25, poor: 0 };
 
-/* --------------------------- data: schedule --------------------------- */
+/* --------------------------- schedule --------------------------- */
 
 async function getSchedule(year, week, seasonType) {
   const d = await fetchJSON(`${ESPN}/scoreboard?seasontype=${seasonType}&week=${week}&dates=${year}`);
@@ -156,11 +187,8 @@ async function getSchedule(year, week, seasonType) {
     });
     return {
       id: ev.id, name: ev.shortName || ev.name, date: ev.date,
-      status: comp.status?.type?.description,
-      state: comp.status?.type?.state,
-      venue: comp.venue?.fullName,
-      indoor: comp.venue?.indoor,
-      weather: comp.weather || null,
+      status: comp.status?.type?.description, state: comp.status?.type?.state,
+      venue: comp.venue?.fullName, indoor: comp.venue?.indoor,
       home: side(home), away: side(away),
     };
   });
@@ -168,10 +196,7 @@ async function getSchedule(year, week, seasonType) {
   return { games, byes: (d.week?.teamsOnBye || []).map((t) => t.abbreviation) };
 }
 
-/* ------------------ data: league-wide defensive context ------------------ */
-/* Points allowed comes from standings (real). Pressure/coverage/run-stuff
-   proxies come from core team statistics. Everything is converted to a
-   league rank 1-32 where 1 = toughest defense. */
+/* --------------------- league defensive context --------------------- */
 
 function walkStandings(node, out = []) {
   if (!node) return out;
@@ -188,8 +213,7 @@ async function getStandings(year) {
     (e.stats || []).forEach((x) => { s[x.name] = x.value !== undefined ? x.value : num(x.displayValue); });
     const gp = (s.wins || 0) + (s.losses || 0) + (s.ties || 0);
     return {
-      id: e.team?.id, abbr: e.team?.abbreviation, name: e.team?.displayName,
-      wins: s.wins, losses: s.losses, ties: s.ties, gp,
+      id: e.team?.id, abbr: e.team?.abbreviation, name: e.team?.displayName, gp,
       pointsAgainst: s.pointsAgainst, pointsFor: s.pointsFor,
       record: [s.wins, s.losses].filter((v) => v !== undefined).join("-") + (s.ties ? "-" + s.ties : ""),
     };
@@ -205,12 +229,10 @@ async function getTeamDefStats(year, teamId) {
   };
   return {
     sacks: g("sacks"), passesDefended: g("passesDefended"),
-    stuffs: g("stuffs"), tacklesForLoss: g("tacklesForLoss"),
-    gp: g("teamGamesPlayed"),
+    stuffs: g("stuffs"), tacklesForLoss: g("tacklesForLoss"), gp: g("teamGamesPlayed"),
   };
 }
 
-/** Rank map: higher raw value = better defense unless invert. 1 = best. */
 function rankBy(rows, key, higherIsBetter) {
   const valid = rows.filter((r) => !isNaN(r[key]));
   const sorted = [...valid].sort((a, b) => (higherIsBetter ? b[key] - a[key] : a[key] - b[key]));
@@ -220,10 +242,9 @@ function rankBy(rows, key, higherIsBetter) {
 }
 
 /**
- * Is this season far enough along for defensive ranks to mean anything?
- * Week 1 is the trap: a Thursday opener leaves 2 teams with a game played and
- * 30 with none, so "any games played" is not a usable test. Requires the median
- * team to have 4+ games, otherwise the sample is noise and we use last season.
+ * Week 1 trap: after a Thursday opener two teams have a game played and thirty
+ * have none, so "no games league-wide" never fires and ranks get computed off a
+ * two-team sample. Test the MEDIAN team instead.
  */
 function seasonHasSample(standings) {
   if (!standings.length) return false;
@@ -231,11 +252,6 @@ function seasonHasSample(standings) {
   return gps[Math.floor(gps.length / 2)] >= 4;
 }
 
-/**
- * Builds the league defense table. Tries `year`; if that season hasn't played
- * enough football yet, falls back to the prior season so the tool shows real
- * ranks instead of a table where 30 teams are tied at zero.
- */
 async function getLeagueDefense(year) {
   let season = year;
   let standings = await getStandings(season);
@@ -252,6 +268,7 @@ async function getLeagueDefense(year) {
     return {
       abbr: t.abbr, name: t.name, record: t.record, gp,
       papg: t.pointsAgainst ? t.pointsAgainst / gp : NaN,
+      ppg: t.pointsFor ? t.pointsFor / gp : NaN,
       sacksPg: isNaN(s.sacks) ? NaN : s.sacks / gp,
       pdPg: isNaN(s.passesDefended) ? NaN : s.passesDefended / gp,
       stuffsPg: isNaN(s.stuffs) ? NaN : s.stuffs / gp,
@@ -259,54 +276,45 @@ async function getLeagueDefense(year) {
     };
   });
 
-  const rPapg   = rankBy(rows, "papg", false);   // fewer points allowed = better
-  const rSacks  = rankBy(rows, "sacksPg", true);
-  const rPd     = rankBy(rows, "pdPg", true);
-  const rStuffs = rankBy(rows, "stuffsPg", true);
-  const rTfl    = rankBy(rows, "tflPg", true);
+  const rPapg = rankBy(rows, "papg", false), rSacks = rankBy(rows, "sacksPg", true),
+        rPd = rankBy(rows, "pdPg", true), rStuffs = rankBy(rows, "stuffsPg", true),
+        rTfl = rankBy(rows, "tflPg", true), rOff = rankBy(rows, "ppg", true);
 
-  // Composite pass / run defense scores, then re-ranked 1-32.
-  const withComposite = rows.map((r) => ({
+  const wc = rows.map((r) => ({
     ...r,
     _pass: ((rSacks[r.abbr] || 16) + (rPd[r.abbr] || 16) + (rPapg[r.abbr] || 16)) / 3,
     _run:  ((rStuffs[r.abbr] || 16) + (rTfl[r.abbr] || 16) + (rPapg[r.abbr] || 16)) / 3,
   }));
-  const rPass = rankBy(withComposite, "_pass", false);
-  const rRun  = rankBy(withComposite, "_run", false);
+  const rPass = rankBy(wc, "_pass", false), rRun = rankBy(wc, "_run", false);
 
   const table = {};
-  withComposite.forEach((r) => {
+  wc.forEach((r) => {
     table[r.abbr] = {
-      ...r,
-      rankPapg: rPapg[r.abbr], rankSacks: rSacks[r.abbr], rankPd: rPd[r.abbr],
+      ...r, rankPapg: rPapg[r.abbr], rankSacks: rSacks[r.abbr], rankPd: rPd[r.abbr],
       rankStuffs: rStuffs[r.abbr], rankTfl: rTfl[r.abbr],
-      rankPass: rPass[r.abbr], rankRun: rRun[r.abbr],
+      rankPass: rPass[r.abbr], rankRun: rRun[r.abbr], rankOffense: rOff[r.abbr],
     };
   });
   return { season, table, teams: standings.length };
 }
 
-/* --------------------------- data: rosters --------------------------- */
+/* ------------------------------ rosters ------------------------------ */
 
 async function getRoster(teamId) {
   const d = await safeJSON(`${ESPN}/teams/${teamId}?enable=roster`);
-  // NOTE: flat array of athletes, not position groups.
-  const athletes = d?.team?.athletes || [];
+  const athletes = d?.team?.athletes || [];   // FLAT array
   return athletes.map((a) => ({
     id: a.id, name: a.displayName, jersey: a.jersey,
     pos: a.position?.abbreviation, active: a.active !== false,
   })).filter((a) => a.id && a.pos);
 }
 
-/* ------------------------ data: athlete season stats ------------------------ */
-
 async function getAthleteSeason(playerId) {
   const d = await safeJSON(`${ESPN_WEB}/athletes/${playerId}/stats`);
   if (!d?.categories) return null;
   const out = { season: null };
   for (const cat of d.categories) {
-    const names = cat.names || [];
-    const seasons = cat.statistics || [];
+    const names = cat.names || [], seasons = cat.statistics || [];
     if (!names.length || !seasons.length) continue;
     let latest = null;
     for (const s of seasons) {
@@ -322,7 +330,27 @@ async function getAthleteSeason(playerId) {
   return out.season ? out : null;
 }
 
-/* --------------------------- data: game detail --------------------------- */
+/**
+ * Resolve a stat by trying candidate field names across the given categories.
+ * Category order matters: `interceptions` means thrown picks in `passing` and
+ * caught picks in `defensiveInterceptions`, so defenders are scoped to
+ * defensive categories only.
+ */
+function statOf(stats, categories, candidates) {
+  if (!stats) return undefined;
+  for (const cat of categories) {
+    const block = stats[cat];
+    if (!block) continue;
+    for (const key of candidates) {
+      if (block[key] !== undefined && block[key] !== null && block[key] !== "") return block[key];
+    }
+  }
+  return undefined;
+}
+const DEF_CATS = ["defensive", "defensiveInterceptions", "general", "defensiveTackles"];
+const defStat = (s, candidates) => statOf(s, DEF_CATS, candidates);
+
+/* --------------------------- game detail --------------------------- */
 
 async function getGameDetail(eventId) {
   const d = await safeJSON(`${ESPN}/summary?event=${eventId}`);
@@ -333,26 +361,130 @@ async function getGameDetail(eventId) {
     const ab = block.team?.abbreviation;
     if (!ab) return;
     injuries[ab] = (block.injuries || []).map((x) => ({
-      name: x.athlete?.displayName,
-      pos: x.athlete?.position?.abbreviation,
-      status: x.status,
-      detail: x.details?.type || x.type?.description || "",
+      name: x.athlete?.displayName, pos: x.athlete?.position?.abbreviation,
+      status: x.status, detail: x.details?.type || x.type?.description || "",
     }));
   });
   return {
-    // NOTE: no windSpeed field on this payload — gust is the wind proxy.
+    // no windSpeed on this payload — gust is the wind proxy
     weather: w ? { temp: w.temperature ?? w.highTemperature, gust: w.gust, conditionId: w.conditionId } : null,
     indoor: d.gameInfo?.venue?.indoor,
     injuries,
   };
 }
 
-/* ------------------------- matchup edge scoring ------------------------- */
+/* ====================== PROJECTION ENGINE ======================
+ * A projection is a season per-game baseline multiplied by a chain of
+ * factors. Every factor declares itself whether or not it is modeled yet,
+ * so the UI can show the full intended chain and mark what is still pending.
+ * Adding a factor = push one object; nothing else changes.
+ * ============================================================== */
+
+const MATCHUP_SPREAD = 0.12;   // best defense -12%, worst +12%
+const PACE_SPREAD    = 0.08;   // defensive-player volume proxy
+
+/** rank 1 (toughest) -> 1-spread ; rank n (softest) -> 1+spread */
+function rankMultiplier(rank, n, spread) {
+  if (!rank || !n || n < 2) return 1;
+  const mid = (n + 1) / 2;
+  return 1 + spread * ((rank - mid) / ((n - 1) / 2));
+}
+
+function weatherFactor(wx, indoor, phase) {
+  if (indoor) return { key: "wx", label: "Indoor — no weather effect", mult: 1, active: true };
+  const temp = num(wx?.temp), gust = num(wx?.gust);
+  if (isNaN(temp) && isNaN(gust)) {
+    return { key: "wx", label: "Weather unavailable", mult: 1, active: false, pending: true };
+  }
+  let mult = 1;
+  const notes = [];
+  if (!isNaN(gust) && gust >= 20) { mult *= phase === "pass" ? 0.92 : 1.04; notes.push(`gusts ${Math.round(gust)}mph`); }
+  else if (!isNaN(gust) && gust >= 15) { mult *= phase === "pass" ? 0.96 : 1.02; notes.push(`gusts ${Math.round(gust)}mph`); }
+  if (!isNaN(temp) && temp < 25) { mult *= phase === "pass" ? 0.96 : 1.02; notes.push(`${Math.round(temp)}°F`); }
+  else if (!isNaN(temp) && temp < 35) { mult *= phase === "pass" ? 0.98 : 1.01; notes.push(`${Math.round(temp)}°F`); }
+  return {
+    key: "wx",
+    label: notes.length ? `Weather: ${notes.join(", ")}` : `Weather neutral${isNaN(temp) ? "" : ` (${Math.round(temp)}°F)`}`,
+    mult, active: true,
+  };
+}
+
 /**
- * edge 0-100. 60% player production grade, 40% how exploitable the opposing
- * defense is by league rank. Deliberately transparent: both inputs are shown
- * in the UI so a bad component is visible rather than buried in one number.
+ * Archetype is classified from production shape — the half of the idea that
+ * current data supports. Defense-vs-archetype needs charting data ESPN does
+ * not expose publicly (slot/wide snaps, box counts), so that factor declares
+ * itself pending rather than inventing a number.
  */
+function archetypeOf(pos, per) {
+  if (pos === "QB") {
+    if (per.rushYdsPg >= 30) return "Dual threat";
+    if (per.ypa >= 8.2) return "Downfield passer";
+    return "Pocket passer";
+  }
+  if (pos === "RB" || pos === "FB") {
+    if (per.recPg >= 3.5) return "Receiving back";
+    if (per.carPg >= 15 && per.ypc < 4.2) return "Bruiser";
+    if (per.ypc >= 4.8) return "Explosive back";
+    return "Rotational back";
+  }
+  if (pos === "TE") return per.tgtPg >= 6 ? "Move TE" : "In-line TE";
+  if (per.ypr >= 15) return "Deep threat";
+  if (per.tgtPg >= 8) return "Volume WR1";
+  if (per.ypr > 0 && per.ypr < 11) return "Possession WR";
+  return "Rotational WR";
+}
+
+/**
+ * Build the factor chain for a player.
+ * phase: "pass" | "rush" | "defense"
+ */
+function buildFactors({ phase, defRow, defAbbr, teams, wx, indoor, archetype }) {
+  const factors = [];
+
+  if (phase === "defense") {
+    const rank = defRow?.rankOffense;
+    factors.push({
+      key: "pace",
+      label: `${defAbbr} offense ${ordinal(rank)} in scoring`,
+      mult: rankMultiplier(rank, teams, PACE_SPREAD),
+      active: !!rank,
+      note: "volume proxy",
+    });
+  } else {
+    const rank = phase === "pass" ? defRow?.rankPass : defRow?.rankRun;
+    factors.push({
+      key: "def",
+      label: `${defAbbr} ${phase === "pass" ? "pass" : "run"} defense ${ordinal(rank)} of ${teams}`,
+      mult: rankMultiplier(rank, teams, MATCHUP_SPREAD),
+      active: !!rank,
+    });
+  }
+
+  factors.push(weatherFactor(wx, indoor, phase === "rush" ? "rush" : "pass"));
+
+  factors.push({
+    key: "time", label: "Kickoff window / game script", mult: 1,
+    active: false, pending: true, note: "not yet modeled",
+  });
+  factors.push({
+    key: "arch", label: `Defense vs ${archetype || "archetype"}`, mult: 1,
+    active: false, pending: true, note: "needs charting data",
+  });
+
+  return factors;
+}
+
+const chainMultiplier = (factors) =>
+  factors.filter((f) => f.active && !isNaN(f.mult)).reduce((a, f) => a * f.mult, 1);
+
+function project(baseline, factors) {
+  const m = chainMultiplier(factors);
+  const out = {};
+  Object.entries(baseline).forEach(([k, v]) => { out[k] = isNaN(v) ? NaN : v * m; });
+  out._mult = m;
+  return out;
+}
+
 function edgeScore(playerGrades, defRank, teams = 32) {
   const gs = playerGrades.filter(Boolean).map((g) => GRADE_SCORE[g]);
   if (!gs.length) return null;
@@ -360,7 +492,6 @@ function edgeScore(playerGrades, defRank, teams = 32) {
   const softness = defRank ? (defRank - 1) / Math.max(1, teams - 1) : 0.5;
   return Math.round((player * 0.6 + softness * 0.4) * 100);
 }
-
 function edgeVerdict(score) {
   if (score === null) return { label: "No data", tone: "neutral" };
   if (score >= 72) return { label: "Smash spot", tone: "hot" };
@@ -370,15 +501,15 @@ function edgeVerdict(score) {
   return { label: "Fade", tone: "cold" };
 }
 
-/* ------------------------------ components ------------------------------ */
+/* ------------------------------ UI atoms ------------------------------ */
 
 const TONES = {
-  hot:     { bg: "rgba(74,222,128,0.13)", bd: "rgba(74,222,128,0.4)",  fg: C.green,   icon: "🔥" },
-  warm:    { bg: "rgba(134,239,172,0.10)", bd: "rgba(134,239,172,0.3)", fg: C.greenSoft, icon: "↗" },
-  neutral: { bg: "rgba(255,255,255,0.04)", bd: C.border,                fg: C.sub,     icon: "—" },
-  cool:    { bg: "rgba(252,165,165,0.10)", bd: "rgba(252,165,165,0.3)", fg: C.redSoft, icon: "↘" },
-  cold:    { bg: "rgba(248,113,113,0.13)", bd: "rgba(248,113,113,0.4)", fg: C.red,     icon: "🧊" },
-  info:    { bg: "rgba(96,165,250,0.10)",  bd: "rgba(96,165,250,0.3)",  fg: C.blue,    icon: "ⓘ" },
+  hot:     { bg: "rgba(255,199,44,.16)",  bd: "rgba(255,199,44,.55)",  fg: T.gold },
+  warm:    { bg: "rgba(185,230,161,.13)", bd: "rgba(185,230,161,.4)",  fg: T.good },
+  neutral: { bg: "rgba(255,255,255,.07)", bd: T.chalkFaint,            fg: T.inkDim },
+  cool:    { bg: "rgba(255,171,145,.13)", bd: "rgba(255,171,145,.4)",  fg: T.bad },
+  cold:    { bg: "rgba(255,107,94,.15)",  bd: "rgba(255,107,94,.5)",   fg: T.poor },
+  leather: { bg: "rgba(107,52,16,.42)",   bd: "rgba(139,74,28,.7)",    fg: "#f0c9a8" },
 };
 
 function Badge({ label, tone = "neutral", icon }) {
@@ -386,193 +517,361 @@ function Badge({ label, tone = "neutral", icon }) {
   return (
     <span style={{
       display: "inline-flex", alignItems: "center", gap: 5, background: t.bg,
-      border: `1px solid ${t.bd}`, borderRadius: 4, padding: "3px 8px",
-      fontSize: 10, color: t.fg, whiteSpace: "nowrap",
-    }}>
-      {icon !== null && <span>{icon || t.icon}</span>} {label}
-    </span>
+      border: `1px solid ${t.bd}`, borderRadius: 3, padding: "3px 8px",
+      fontSize: 10, color: t.fg, whiteSpace: "nowrap", fontWeight: 500,
+    }}>{icon && <span>{icon}</span>}{label}</span>
   );
 }
 
-function Stat({ label, value, g, note }) {
+/** White chalk rule, like a yard line. */
+const ChalkLine = ({ opacity = 1, style }) => (
+  <div style={{ height: 1, background: T.chalkDim, opacity, ...style }} />
+);
+
+function Panel({ children, style, className = "" }) {
   return (
-    <td style={{ padding: "9px 8px", textAlign: "center", minWidth: 56 }}>
-      <div style={{
-        fontFamily: "'Barlow Condensed',sans-serif", fontSize: 17, fontWeight: 600,
-        letterSpacing: 0.5, color: gradeColor(g),
-      }}>{value}</div>
-      <div style={{ fontSize: 9, color: C.muted, marginTop: 1, letterSpacing: 0.2 }}>
-        {label}{note ? ` ${note}` : ""}
-      </div>
-    </td>
+    <div className={`card ${className}`} style={{
+      background: "linear-gradient(180deg, rgba(10,45,26,.82), rgba(10,45,26,.94))",
+      border: `1px solid ${T.chalkFaint}`, borderRadius: 5,
+      boxShadow: SHADOW, ...style,
+    }}>{children}</div>
   );
 }
+
+function SectionTitle({ children, right }) {
+  return (
+    <div style={{ marginBottom: 10 }}>
+      <div style={{
+        display: "flex", alignItems: "baseline", gap: 9, flexWrap: "wrap",
+        fontFamily: "'Barlow Condensed',sans-serif", fontSize: 15, fontWeight: 700,
+        letterSpacing: 1.6, color: T.chalk, textTransform: "uppercase",
+      }}>
+        {children}
+        {right && <span style={{
+          fontFamily: "'Inter',sans-serif", fontSize: 10, letterSpacing: 0,
+          fontWeight: 500, color: T.inkFaint, textTransform: "none",
+        }}>{right}</span>}
+      </div>
+      <div className="hash" style={{ marginTop: 5 }} />
+    </div>
+  );
+}
+
+/** One season-stat readout. */
+function Stat({ label, value, g, sub }) {
+  return (
+    <div style={{ minWidth: 62 }}>
+      <div style={{ fontSize: 9, color: T.inkFaint, letterSpacing: .5, fontWeight: 500 }}>{label}</div>
+      <div style={{
+        fontFamily: "'Barlow Condensed',sans-serif", fontSize: 20, fontWeight: 700,
+        lineHeight: 1.15, color: gradeColor(g), letterSpacing: .5,
+      }}>{value}</div>
+      {sub && <div style={{ fontSize: 9, color: T.inkFaint }}>{sub}</div>}
+    </div>
+  );
+}
+
+/** Projected line — gold, on a leather plate. */
+function ProjStat({ label, value, delta }) {
+  return (
+    <div style={{ minWidth: 74 }}>
+      <div style={{ fontSize: 9, color: "#e8c9ac", letterSpacing: .5, fontWeight: 500 }}>{label}</div>
+      <div style={{
+        fontFamily: "'Barlow Condensed',sans-serif", fontSize: 23, fontWeight: 700,
+        lineHeight: 1.1, color: T.gold, letterSpacing: .5,
+      }}>{value}</div>
+      {delta !== undefined && !isNaN(delta) && (
+        <div style={{ fontSize: 9, color: delta >= 0 ? T.good : T.bad }}>
+          {delta >= 0 ? "▲" : "▼"} {Math.abs(delta).toFixed(1)}% vs avg
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FactorChain({ factors }) {
+  return (
+    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 9 }}>
+      {factors.map((f) => {
+        const pending = f.pending || !f.active;
+        const pct = f.active && !isNaN(f.mult) ? (f.mult - 1) * 100 : null;
+        return (
+          <span key={f.key} title={f.note || ""} style={{
+            display: "inline-flex", alignItems: "center", gap: 6,
+            background: pending ? "rgba(255,255,255,.04)" : "rgba(0,0,0,.28)",
+            border: `1px dashed ${pending ? T.chalkFaint : "transparent"}`,
+            borderLeft: pending ? undefined : `2px solid ${pct > 0 ? T.gold : pct < 0 ? T.bad : T.chalkDim}`,
+            borderRadius: 3, padding: "3px 8px", fontSize: 10,
+            color: pending ? T.inkFaint : T.inkDim,
+          }}>
+            <span>{f.label}</span>
+            <strong style={{
+              fontFamily: "'Barlow Condensed',sans-serif", fontSize: 13, letterSpacing: .4,
+              color: pending ? T.inkFaint : pct > 0 ? T.gold : pct < 0 ? T.bad : T.chalk,
+            }}>
+              {pending ? (f.note || "pending") : `×${f.mult.toFixed(3)}`}
+            </strong>
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+/* --------------------------- the player card --------------------------- */
+
+function PlayerCard({ p, defAbbr, defRow, teams, wx, indoor, kind }) {
+  const s = p.stats || {};
+  const passing = s.passing || {}, rushing = s.rushing || {}, receiving = s.receiving || {};
+
+  const gpOf = (blk) => num(blk.gamesPlayed);
+  let gp = gpOf(passing) || gpOf(rushing) || gpOf(receiving);
+  if (kind === "DEF") gp = num(defStat(s, ["gamesPlayed", "teamGamesPlayed"]));
+  const G = gp && gp > 0 ? gp : NaN;
+
+  let per = {}, seasonCells = [], baseline = {}, projLabels = [], grades = [], phase = "pass";
+
+  if (kind === "QB") {
+    phase = "pass";
+    const att = num(passing.passingAttempts), yds = num(passing.passingYards),
+          td = num(passing.passingTouchdowns), ints = num(passing.interceptions),
+          rtg = num(passing.QBRating), ypa = num(passing.yardsPerPassAttempt),
+          cmp = num(passing.completionPct), rush = num(rushing.rushingYards);
+    per = { ypg: yds / G, tdPg: td / G, ypa, rushYdsPg: rush / G };
+    const tdPct = att ? (td / att) * 100 : NaN, intPct = att ? (ints / att) * 100 : NaN;
+    const g1 = grade(yds / G, [285, 250, 215, 180]), g2 = grade(rtg, [100, 90, 80, 70]),
+          g3 = grade(ypa, [8.2, 7.4, 6.7, 6.0]), g4 = grade(cmp, [68, 64, 60, 56]),
+          g5 = grade(tdPct, [6, 4.8, 3.8, 2.8]), g6 = grade(intPct, [1.4, 2, 2.6, 3.2], false);
+    grades = [g1, g2, g3, g4, g5, g6];
+    seasonCells = [
+      { label: "YDS/G", value: fmt(yds / G), g: g1 },       /* requested */
+      { label: "RTG", value: fmt(rtg), g: g2 },
+      { label: "YPA", value: fmt(ypa), g: g3 },
+      { label: "CMP%", value: isNaN(cmp) ? "—" : fmt(cmp) + "%", g: g4 },
+      { label: "TD%", value: isNaN(tdPct) ? "—" : tdPct.toFixed(1) + "%", g: g5 },
+      { label: "INT%", value: isNaN(intPct) ? "—" : intPct.toFixed(1) + "%", g: g6 },
+      { label: "TD/G", value: fmt(td / G) },
+      { label: "RUSH/G", value: fmt(rush / G) },
+    ];
+    baseline = { passYds: yds / G, passTd: td / G, ints: ints / G, rushYds: rush / G };
+    projLabels = [
+      { key: "passYds", label: "PASS YDS", d: 1 },
+      { key: "passTd", label: "PASS TD", d: 2 },
+      { key: "ints", label: "INT", d: 2 },
+      { key: "rushYds", label: "RUSH YDS", d: 1 },
+    ];
+  } else if (kind === "REC") {
+    phase = "pass";
+    const rec = num(receiving.receptions), yds = num(receiving.receivingYards),
+          tgt = num(receiving.receivingTargets), td = num(receiving.receivingTouchdowns),
+          ypr = num(receiving.yardsPerReception);
+    per = { ypr, tgtPg: tgt / G, recPg: rec / G };
+    const g1 = grade(yds / G, [80, 60, 42, 28]), g2 = grade(tgt / G, [8.5, 6.5, 4.5, 3]),
+          g3 = grade(ypr, [15, 12.5, 10.5, 8.5]), g4 = grade(rec / G, [6, 4.5, 3, 2]);
+    grades = [g1, g2, g3, g4];
+    seasonCells = [
+      { label: "YDS/G", value: fmt(yds / G), g: g1 },
+      { label: "TGT/G", value: fmt(tgt / G), g: g2 },
+      { label: "REC/G", value: fmt(rec / G), g: g4 },
+      { label: "YPR", value: fmt(ypr), g: g3 },
+      { label: "TD", value: int(td) },
+      { label: "YDS", value: int(yds), sub: isNaN(G) ? "" : `${int(G)}g` },
+    ];
+    baseline = { recYds: yds / G, rec: rec / G, tgt: tgt / G, td: td / G };
+    projLabels = [
+      { key: "recYds", label: "REC YDS", d: 1 },
+      { key: "rec", label: "REC", d: 1 },
+      { key: "tgt", label: "TGT", d: 1 },
+      { key: "td", label: "TD", d: 2 },
+    ];
+  } else if (kind === "RB") {
+    phase = "rush";
+    const car = num(rushing.rushingAttempts), yds = num(rushing.rushingYards),
+          ypc = num(rushing.yardsPerRushAttempt), td = num(rushing.rushingTouchdowns),
+          rec = num(receiving.receptions), recYds = num(receiving.receivingYards);
+    per = { carPg: car / G, ypc, recPg: rec / G };
+    const g1 = grade(yds / G, [90, 70, 50, 32]), g2 = grade(car / G, [18, 14, 10, 6]),
+          g3 = grade(ypc, [5, 4.5, 4.1, 3.7]), g4 = grade(rec / G, [4, 2.5, 1.5, .8]);
+    grades = [g1, g2, g3, g4];
+    seasonCells = [
+      { label: "YDS/G", value: fmt(yds / G), g: g1 },
+      { label: "CAR/G", value: fmt(car / G), g: g2 },
+      { label: "YPC", value: fmt(ypc), g: g3 },
+      { label: "REC/G", value: fmt(rec / G), g: g4 },
+      { label: "TD", value: int(td) },
+      { label: "YDS", value: int(yds), sub: isNaN(G) ? "" : `${int(G)}g` },
+    ];
+    baseline = { rushYds: yds / G, car: car / G, td: td / G, recYds: recYds / G };
+    projLabels = [
+      { key: "rushYds", label: "RUSH YDS", d: 1 },
+      { key: "car", label: "CAR", d: 1 },
+      { key: "td", label: "RUSH TD", d: 2 },
+      { key: "recYds", label: "REC YDS", d: 1 },
+    ];
+  } else { /* DEF */
+    phase = "defense";
+    const tkl = num(defStat(s, ["totalTackles", "tackles", "combinedTackles"])),
+          solo = num(defStat(s, ["soloTackles", "unassistedTackles"])),
+          sacks = num(defStat(s, ["sacks", "totalSacks"])),
+          ints = num(defStat(s, ["interceptions", "defensiveInterceptions", "totalInterceptions"])),
+          pd = num(defStat(s, ["passesDefended", "passesBattedDown"])),
+          tfl = num(defStat(s, ["tacklesForLoss", "totalTacklesForLoss"])),
+          ff = num(defStat(s, ["fumblesForced", "defensiveFumblesForced"]));
+    per = {};
+    const g1 = grade(tkl / G, [7, 5.5, 4, 2.5]), g2 = grade(sacks / G, [.7, .45, .25, .1]),
+          g3 = grade(ints / G, [.3, .18, .09, .03]), g4 = grade(pd / G, [1, .6, .35, .15]);
+    grades = [g1, g2, g3, g4];
+    seasonCells = [
+      { label: "TKL/G", value: fmt(tkl / G), g: g1 },
+      { label: "SACK/G", value: fmt(sacks / G, 2), g: g2 },
+      { label: "INT/G", value: fmt(ints / G, 2), g: g3 },
+      { label: "PD/G", value: fmt(pd / G, 2), g: g4 },
+      { label: "TKL", value: int(tkl), sub: isNaN(G) ? "" : `${int(G)}g` },
+      { label: "SACKS", value: fmt(sacks, 1) },
+      { label: "INT", value: int(ints) },
+      { label: "TFL", value: int(tfl) },
+      { label: "FF", value: int(ff) },
+    ];
+    baseline = { tkl: tkl / G, sacks: sacks / G, ints: ints / G, pd: pd / G };
+    projLabels = [
+      { key: "tkl", label: "TACKLES", d: 1 },
+      { key: "sacks", label: "SACKS", d: 2 },
+      { key: "ints", label: "INT", d: 2 },
+      { key: "pd", label: "PD", d: 2 },
+    ];
+  }
+
+  const archetype = kind === "DEF" ? null : archetypeOf(p.pos, per);
+  const factors = buildFactors({ phase, defRow, defAbbr, teams, wx, indoor, archetype });
+  const projected = project(baseline, factors);
+  const deltaPct = (projected._mult - 1) * 100;
+
+  const defRank = kind === "DEF" ? defRow?.rankOffense
+    : phase === "rush" ? defRow?.rankRun : defRow?.rankPass;
+  const score = edgeScore(grades, defRank, teams);
+  const verdict = edgeVerdict(score);
+  const hasAny = seasonCells.some((c) => c.value !== "—");
+
+  return (
+    <Panel style={{ marginBottom: 10, overflow: "hidden" }}>
+      {/* header */}
+      <div style={{
+        display: "flex", alignItems: "center", gap: 10, padding: "9px 13px",
+        background: "rgba(0,0,0,.22)", flexWrap: "wrap",
+      }}>
+        <span style={{
+          fontFamily: "'Barlow Condensed',sans-serif", fontSize: 12, fontWeight: 700,
+          color: T.turfDeep, background: T.chalk, borderRadius: 2, padding: "1px 6px",
+          letterSpacing: .5, boxShadow: SHADOW_SM,
+        }}>{p.jersey ? `#${p.jersey}` : p.pos}</span>
+        <span style={{ fontWeight: 600, fontSize: 14, color: T.chalk }}>{p.name}</span>
+        <span style={{ fontSize: 10, color: T.inkFaint }}>
+          {p.pos} · {p.stats?.season || "—"} season
+        </span>
+        {archetype && <Badge label={archetype} tone="leather" />}
+        {p.injury && <Badge label={`${p.injury.status}`} tone={/out|doubtful/i.test(p.injury.status) ? "cold" : "cool"} />}
+        <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{
+            fontFamily: "'Barlow Condensed',sans-serif", fontSize: 25, fontWeight: 700,
+            color: TONES[verdict.tone].fg, lineHeight: 1,
+          }}>{score === null ? "—" : score}</span>
+          <Badge label={verdict.label} tone={verdict.tone} />
+        </span>
+      </div>
+      <ChalkLine />
+
+      {!hasAny && (
+        <div style={{ padding: "12px 13px", fontSize: 11, color: T.inkFaint }}>
+          No {kind === "DEF" ? "defensive" : ""} stats returned for this player.
+        </div>
+      )}
+
+      {hasAny && (
+        <>
+          {/* SEASON */}
+          <div style={{ padding: "11px 13px 12px" }}>
+            <div style={{
+              fontSize: 9, letterSpacing: 1.4, color: T.inkFaint,
+              fontWeight: 600, marginBottom: 8,
+            }}>SEASON — WHAT HE'S ACTUALLY DONE</div>
+            <div style={{ display: "flex", gap: 18, flexWrap: "wrap" }}>
+              {seasonCells.map((c, i) => <Stat key={i} {...c} />)}
+            </div>
+          </div>
+
+          {/* PROJECTION */}
+          <div style={{
+            padding: "11px 13px 13px",
+            background: "linear-gradient(180deg, rgba(107,52,16,.30), rgba(67,32,10,.42))",
+            borderTop: `1px solid ${T.chalkFaint}`,
+          }}>
+            <div style={{
+              display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap", marginBottom: 8,
+            }}>
+              <span style={{ fontSize: 9, letterSpacing: 1.4, color: "#e8c9ac", fontWeight: 600 }}>
+                PROJECTED LINE vs {defAbbr}
+              </span>
+              <span style={{ fontSize: 9, color: "#c9a583" }}>
+                season baseline × {projected._mult.toFixed(3)}
+              </span>
+            </div>
+            <div style={{ display: "flex", gap: 22, flexWrap: "wrap" }}>
+              {projLabels.map((l) => (
+                <ProjStat key={l.key} label={l.label}
+                  value={isNaN(projected[l.key]) ? "—" : projected[l.key].toFixed(l.d)}
+                  delta={isNaN(projected[l.key]) ? undefined : deltaPct} />
+              ))}
+            </div>
+            <FactorChain factors={factors} />
+          </div>
+        </>
+      )}
+    </Panel>
+  );
+}
+
+/* --------------------------- defense summary --------------------------- */
 
 function DefenseCard({ def, defAbbr, season }) {
   if (!def) return null;
-  const rankTone = (r) => (r <= 10 ? "cold" : r >= 23 ? "hot" : "neutral");
   const item = (label, rank, val) => (
-    <div style={{ minWidth: 92 }}>
-      <div style={{ fontSize: 9, color: C.muted, letterSpacing: 0.4, marginBottom: 3 }}>{label}</div>
+    <div style={{ minWidth: 96 }}>
+      <div style={{ fontSize: 9, color: T.inkFaint, letterSpacing: .5, marginBottom: 3 }}>{label}</div>
       <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
         <span style={{
-          fontFamily: "'Barlow Condensed',sans-serif", fontSize: 19, fontWeight: 700,
-          color: rank <= 10 ? C.red : rank >= 23 ? C.green : C.text,
+          fontFamily: "'Barlow Condensed',sans-serif", fontSize: 21, fontWeight: 700,
+          color: rank <= 10 ? T.poor : rank >= 23 ? T.gold : T.chalk,
         }}>{ordinal(rank)}</span>
-        <span style={{ fontSize: 10, color: C.sub }}>{val}</span>
+        <span style={{ fontSize: 10, color: T.inkFaint }}>{val}</span>
       </div>
     </div>
   );
   return (
-    <div style={{
-      background: C.card, border: `1px solid ${C.border}`, borderRadius: 6,
-      padding: "11px 14px", marginBottom: 16,
-    }}>
-      <div style={{ fontSize: 10, color: C.muted, letterSpacing: 0.6, marginBottom: 9 }}>
-        {defAbbr} DEFENSE · {season} SEASON RANKS <span style={{ color: C.sub }}>(1 = toughest, 32 = softest)</span>
+    <Panel style={{ padding: "12px 14px", marginBottom: 14 }}>
+      <div style={{ fontSize: 10, color: T.inkFaint, letterSpacing: .8, marginBottom: 10 }}>
+        {defAbbr} DEFENSE · {season} RANKS <span style={{ color: T.inkFaint }}>(1 = toughest, 32 = softest)</span>
       </div>
       <div style={{ display: "flex", gap: 22, flexWrap: "wrap" }}>
         {item("PTS ALLOWED", def.rankPapg, isNaN(def.papg) ? "—" : def.papg.toFixed(1) + "/g")}
         {item("PASS D", def.rankPass, isNaN(def.sacksPg) ? "—" : def.sacksPg.toFixed(1) + " sk/g")}
-        {item("RUN D", def.rankRun, isNaN(def.stuffsPg) ? "—" : def.stuffsPg.toFixed(1) + " stuff/g")}
-        {item("COVERAGE", def.rankPd, isNaN(def.pdPg) ? "—" : def.pdPg.toFixed(1) + " PD/g")}
-        {item("PRESSURE", def.rankSacks, isNaN(def.tflPg) ? "—" : def.tflPg.toFixed(1) + " TFL/g")}
+        {item("RUN D", def.rankRun, isNaN(def.stuffsPg) ? "—" : def.stuffsPg.toFixed(1) + " stf/g")}
+        {item("COVERAGE", def.rankPd, isNaN(def.pdPg) ? "—" : def.pdPg.toFixed(1) + " pd/g")}
+        {item("PRESSURE", def.rankSacks, isNaN(def.tflPg) ? "—" : def.tflPg.toFixed(1) + " tfl/g")}
       </div>
-      <div style={{ fontSize: 9, color: C.muted, marginTop: 9, lineHeight: 1.5 }}>
-        Points allowed is total defense, not split by pass/rush. Pass D and Run D are composites of
+      <div style={{ fontSize: 9, color: T.inkFaint, marginTop: 10, lineHeight: 1.5 }}>
+        Points allowed is total defense, not split pass/rush. Pass D and Run D are composites of
         sack, coverage and run-stuff rates — directional, not DVOA.
       </div>
-    </div>
+    </Panel>
   );
 }
 
-function PlayerRow({ p, defAbbr, defRank, type, teams }) {
-  const s = p.stats || {};
-  const passing = s.passing || {}, rushing = s.rushing || {}, receiving = s.receiving || {};
-  let cells = [], grades = [];
+/* ------------------------------ game view ------------------------------ */
 
-  if (type === "QB") {
-    const rtg = passing.QBRating, ypa = passing.yardsPerPassAttempt,
-          cmp = passing.completionPct, td = passing.passingTouchdowns,
-          ints = passing.interceptions, att = passing.passingAttempts,
-          yds = passing.passingYards, gp = passing.gamesPlayed;
-    const g1 = grade(rtg, [100, 90, 80, 70]), g2 = grade(ypa, [8.2, 7.4, 6.7, 6.0]),
-          g3 = grade(cmp, [68, 64, 60, 56]);
-    const tdPct = num(att) ? (num(td) / num(att)) * 100 : NaN;
-    const intPct = num(att) ? (num(ints) / num(att)) * 100 : NaN;
-    const g4 = grade(tdPct, [6, 4.8, 3.8, 2.8]), g5 = grade(intPct, [1.4, 2, 2.6, 3.2], false);
-    grades = [g1, g2, g3, g4, g5];
-    cells = [
-      { label: "RTG", value: fmt(rtg), g: g1 },
-      { label: "YPA", value: fmt(ypa), g: g2 },
-      { label: "CMP%", value: isNaN(num(cmp)) ? "—" : fmt(cmp) + "%", g: g3 },
-      { label: "TD%", value: isNaN(tdPct) ? "—" : tdPct.toFixed(1) + "%", g: g4 },
-      { label: "INT%", value: isNaN(intPct) ? "—" : intPct.toFixed(1) + "%", g: g5 },
-      { label: "YDS", value: int(yds), note: gp ? `(${int(gp)}g)` : "" },
-    ];
-  } else if (type === "WR") {
-    const rec = receiving.receptions, yds = receiving.receivingYards,
-          ypr = receiving.yardsPerReception, tgt = receiving.receivingTargets,
-          td = receiving.receivingTouchdowns, gp = receiving.gamesPlayed;
-    const ypg = num(gp) ? num(yds) / num(gp) : NaN;
-    const tpg = num(gp) ? num(tgt) / num(gp) : NaN;
-    const g1 = grade(ypg, [75, 58, 42, 28]), g2 = grade(tpg, [8.5, 6.5, 4.5, 3]),
-          g3 = grade(ypr, [14.5, 12.5, 10.5, 8.5]);
-    grades = [g1, g2, g3];
-    cells = [
-      { label: "YDS/G", value: fmt(ypg), g: g1 },
-      { label: "TGT/G", value: fmt(tpg), g: g2 },
-      { label: "YPR", value: fmt(ypr), g: g3 },
-      { label: "REC", value: int(rec) },
-      { label: "TD", value: int(td) },
-      { label: "YDS", value: int(yds), note: gp ? `(${int(gp)}g)` : "" },
-    ];
-  } else {
-    const car = rushing.rushingAttempts, yds = rushing.rushingYards,
-          ypc = rushing.yardsPerRushAttempt, td = rushing.rushingTouchdowns,
-          gp = rushing.gamesPlayed, rec = receiving.receptions;
-    const ypg = num(gp) ? num(yds) / num(gp) : NaN;
-    const cpg = num(gp) ? num(car) / num(gp) : NaN;
-    const g1 = grade(ypg, [90, 70, 50, 32]), g2 = grade(cpg, [18, 14, 10, 6]),
-          g3 = grade(ypc, [5, 4.5, 4.1, 3.7]);
-    grades = [g1, g2, g3];
-    cells = [
-      { label: "YDS/G", value: fmt(ypg), g: g1 },
-      { label: "CAR/G", value: fmt(cpg), g: g2 },
-      { label: "YPC", value: fmt(ypc), g: g3 },
-      { label: "TD", value: int(td) },
-      { label: "REC", value: int(rec), note: "rec" },
-      { label: "YDS", value: int(yds), note: gp ? `(${int(gp)}g)` : "" },
-    ];
-  }
-
-  const score = edgeScore(grades, defRank, teams);
-  const verdict = edgeVerdict(score);
-
-  return (
-    <tr className="row-hover" style={{ borderBottom: `1px solid ${C.border}`, transition: "background .1s" }}>
-      <td style={{ padding: "9px 14px", minWidth: 155 }}>
-        <div style={{ fontWeight: 500, fontSize: 13, display: "flex", alignItems: "center", gap: 6 }}>
-          {p.name}
-          {p.injury && <span title={p.injury.detail} style={{
-            fontSize: 9, color: C.yellow, border: `1px solid rgba(251,191,36,.35)`,
-            borderRadius: 3, padding: "1px 4px",
-          }}>{p.injury.status}</span>}
-        </div>
-        <div style={{ fontSize: 10, color: C.muted, marginTop: 2 }}>
-          {p.pos} · vs {defAbbr} {type === "RB" ? "run D" : type === "QB" ? "pass D" : "secondary"}
-          {p.stats?.season ? ` · ${p.stats.season}` : ""}
-        </div>
-      </td>
-      {cells.map((c, i) => <Stat key={i} {...c} />)}
-      <td style={{ padding: "9px 12px", minWidth: 132 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{
-            fontFamily: "'Barlow Condensed',sans-serif", fontSize: 20, fontWeight: 700,
-            color: TONES[verdict.tone].fg, minWidth: 26,
-          }}>{score === null ? "—" : score}</span>
-          <Badge label={verdict.label} tone={verdict.tone} />
-        </div>
-      </td>
-    </tr>
-  );
-}
-
-function Section({ title, icon, players, defAbbr, defRank, type, teams, loading }) {
-  return (
-    <div style={{ marginBottom: 20 }}>
-      <div style={{
-        fontSize: 11, fontWeight: 600, color: C.muted, marginBottom: 9,
-        letterSpacing: 0.6, display: "flex", alignItems: "center", gap: 6,
-      }}>
-        {icon} {title.toUpperCase()}
-        {defRank && <span style={{ color: C.sub, fontWeight: 400 }}>
-          · {defAbbr} ranks {ordinal(defRank)} of {teams}
-        </span>}
-      </div>
-      <div style={{ border: `1px solid ${C.border}`, borderRadius: 6, overflow: "hidden", overflowX: "auto" }}>
-        <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <tbody>
-            {loading && (
-              <tr><td style={{ padding: "14px", color: C.muted, fontSize: 12 }}>Loading player stats…</td></tr>
-            )}
-            {!loading && !players.length && (
-              <tr><td style={{ padding: "14px", color: C.muted, fontSize: 12 }}>No qualifying players found.</td></tr>
-            )}
-            {!loading && players.map((p) => (
-              <PlayerRow key={p.id} p={p} defAbbr={defAbbr} defRank={defRank} type={type} teams={teams} />
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
-
-function GameView({ game, league, byes }) {
+function GameView({ game, league }) {
   const [side, setSide] = useState("home");
   const [detail, setDetail] = useState(null);
-  const [players, setPlayers] = useState({ QB: [], WR: [], RB: [] });
+  const [groups, setGroups] = useState({ QB: [], REC: [], RB: [], DEF: [] });
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState(null);
   const reqId = useRef(0);
@@ -586,41 +885,48 @@ function GameView({ game, league, byes }) {
 
   useEffect(() => {
     const my = ++reqId.current;
-    setLoading(true); setErr(null); setPlayers({ QB: [], WR: [], RB: [] });
+    setLoading(true); setErr(null); setGroups({ QB: [], REC: [], RB: [], DEF: [] });
 
     (async () => {
       try {
-        const roster = await getRoster(off.id);
-        if (!roster.length) throw new Error("roster unavailable");
-        const want = roster.filter((p) => ["QB", "RB", "FB", "WR", "TE"].includes(p.pos));
-        const stats = await pool(want, 8, (p) => getAthleteSeason(p.id));
+        const [offRoster, defRoster] = await Promise.all([getRoster(off.id), getRoster(def.id)]);
+        if (!offRoster.length) throw new Error("roster unavailable");
+
+        const offWant = offRoster.filter((p) => OFF_POS.includes(p.pos));
+        const defWant = defRoster.filter((p) => DEF_POS.includes(p.pos));
+        const all = [...offWant, ...defWant];
+        const stats = await pool(all, 8, (p) => getAthleteSeason(p.id));
         if (my !== reqId.current) return;
 
-        const inj = detail?.injuries?.[off.abbr] || [];
-        const withStats = want.map((p, i) => ({
-          ...p, stats: stats[i],
-          injury: inj.find((x) => x.name === p.name) || null,
-        })).filter((p) => p.stats);
+        const offInj = detail?.injuries?.[off.abbr] || [];
+        const defInj = detail?.injuries?.[def.abbr] || [];
+        const decorate = (p, i, inj) => ({
+          ...p, stats: stats[i], injury: inj.find((x) => x.name === p.name) || null,
+        });
+        const offPlayers = offWant.map((p, i) => decorate(p, i, offInj)).filter((p) => p.stats);
+        const defPlayers = defWant.map((p, i) => decorate(p, offWant.length + i, defInj)).filter((p) => p.stats);
 
-        const vol = (p, cat, key) => num(p.stats?.[cat]?.[key]) || 0;
-        const qbs = withStats.filter((p) => p.pos === "QB")
-          .sort((a, b) => vol(b, "passing", "passingAttempts") - vol(a, "passing", "passingAttempts"))
-          .slice(0, 2);
-        const pass = withStats.filter((p) => ["WR", "TE"].includes(p.pos))
-          .sort((a, b) => vol(b, "receiving", "receivingYards") - vol(a, "receiving", "receivingYards"))
-          .slice(0, 5);
-        const rbs = withStats.filter((p) => ["RB", "FB"].includes(p.pos))
-          .sort((a, b) => vol(b, "rushing", "rushingAttempts") - vol(a, "rushing", "rushingAttempts"))
-          .slice(0, 3);
+        const v = (p, cat, key) => num(p.stats?.[cat]?.[key]) || 0;
+        const dv = (p, names) => num(defStat(p.stats, names)) || 0;
 
-        setPlayers({ QB: qbs, WR: pass, RB: rbs });
+        setGroups({
+          QB: offPlayers.filter((p) => p.pos === "QB")
+            .sort((a, b) => v(b, "passing", "passingAttempts") - v(a, "passing", "passingAttempts")).slice(0, 2),
+          REC: offPlayers.filter((p) => ["WR", "TE"].includes(p.pos))
+            .sort((a, b) => v(b, "receiving", "receivingYards") - v(a, "receiving", "receivingYards")).slice(0, 5),
+          RB: offPlayers.filter((p) => ["RB", "FB"].includes(p.pos))
+            .sort((a, b) => v(b, "rushing", "rushingAttempts") - v(a, "rushing", "rushingAttempts")).slice(0, 3),
+          DEF: defPlayers
+            .sort((a, b) => dv(b, ["totalTackles", "tackles", "combinedTackles"])
+                          - dv(a, ["totalTackles", "tackles", "combinedTackles"])).slice(0, 6),
+        });
         setLoading(false);
       } catch (e) {
         if (my !== reqId.current) return;
         setErr(e.message); setLoading(false);
       }
     })();
-  }, [game.id, side, off.id, detail]);
+  }, [game.id, side, off.id, def.id, detail]);
 
   const when = useMemo(() => {
     const d = new Date(game.date);
@@ -629,88 +935,123 @@ function GameView({ game, league, byes }) {
   }, [game.date]);
 
   const wx = detail?.weather;
-  const temp = num(wx?.temp), gust = num(wx?.gust);
   const indoor = game.indoor || detail?.indoor;
+  const temp = num(wx?.temp), gust = num(wx?.gust);
   const divisional = DIVISION[game.home.abbr] && DIVISION[game.home.abbr] === DIVISION[game.away.abbr];
-  const injCount = (detail?.injuries?.[off.abbr] || []).length;
+  const offInjuries = detail?.injuries?.[off.abbr] || [];
+
+  const common = { defAbbr: def.abbr, defRow, teams, wx, indoor };
 
   return (
     <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
-      <div style={{ flexShrink: 0, marginBottom: 14 }}>
+      {/* scoreboard header */}
+      <div style={{ flexShrink: 0, marginBottom: 13 }}>
         <div style={{
-          fontFamily: "'Barlow Condensed',sans-serif", fontSize: 30, fontWeight: 700,
-          letterSpacing: 1, lineHeight: 1.1,
+          fontFamily: "'Barlow Condensed',sans-serif", fontSize: 34, fontWeight: 700,
+          letterSpacing: 1.5, lineHeight: 1.05, color: T.chalk,
+          textShadow: `0 2px 0 ${T.leatherDark}, 0 4px 12px rgba(0,0,0,.5)`,
         }}>
-          {game.away.abbr} <span style={{ color: C.muted, fontSize: 20, fontWeight: 400 }}>at</span> {game.home.abbr}
+          {game.away.abbr} <span style={{ color: T.gold, fontSize: 21, fontWeight: 400 }}>at</span> {game.home.abbr}
         </div>
-        <div style={{ fontSize: 12, color: C.sub, marginTop: 4 }}>
+        <div style={{ fontSize: 11.5, color: T.inkDim, marginTop: 3 }}>
           {when} · {game.venue || "TBD"}
           {game.away.record && ` · ${game.away.abbr} ${game.away.record}, ${game.home.abbr} ${game.home.record || ""}`}
         </div>
         <div style={{ display: "flex", gap: 7, marginTop: 9, flexWrap: "wrap" }}>
           {!indoor && !isNaN(gust) && gust >= 15 &&
-            <Badge label={`Wind gusts ${Math.round(gust)} mph — passing/kicking suppressed`} tone="cold" />}
+            <Badge icon="💨" label={`Gusts ${Math.round(gust)} mph — passing suppressed`} tone="cold" />}
           {!indoor && !isNaN(temp) && temp < 35 &&
-            <Badge label={`${Math.round(temp)}°F — cold weather game`} tone="cold" />}
+            <Badge icon="🧊" label={`${Math.round(temp)}°F`} tone="cold" />}
           {!indoor && !isNaN(temp) && temp >= 35 && (isNaN(gust) || gust < 15) &&
-            <Badge label={`${Math.round(temp)}°F${isNaN(gust) ? "" : `, gusts ${Math.round(gust)} mph`}`} tone="neutral" icon="🌤" />}
-          {indoor && <Badge label="Indoor — no weather factor" tone="info" />}
-          {divisional && <Badge label={`Divisional (${DIVISION[game.home.abbr]}) — trends under`} tone="info" />}
-          {game.state && game.state !== "pre" && <Badge label={game.status} tone="neutral" />}
+            <Badge icon="🌤" label={`${Math.round(temp)}°F${isNaN(gust) ? "" : `, gusts ${Math.round(gust)}`}`} />}
+          {indoor && <Badge icon="🏟" label="Indoor — no weather factor" />}
+          {divisional && <Badge icon="⚔" label={`Divisional (${DIVISION[game.home.abbr]}) — trends under`} tone="leather" />}
+          {game.state && game.state !== "pre" && <Badge label={game.status} />}
         </div>
       </div>
 
+      {/* side toggle */}
       <div style={{ display: "flex", gap: 8, marginBottom: 14, flexShrink: 0, flexWrap: "wrap" }}>
         {[["away", game.away, game.home], ["home", game.home, game.away]].map(([s, o, d]) => (
           <button key={s} onClick={() => setSide(s)} style={{
-            padding: "7px 14px", fontSize: 12, fontWeight: 600, borderRadius: 4, cursor: "pointer",
-            background: side === s ? C.green : C.card, color: side === s ? C.bg : C.text,
-            border: `1px solid ${side === s ? C.green : C.border}`,
-            fontFamily: "'Barlow Condensed',sans-serif", letterSpacing: 0.5,
+            padding: "8px 15px", fontSize: 12.5, fontWeight: 700, borderRadius: 3, cursor: "pointer",
+            background: side === s ? T.gold : "rgba(0,0,0,.3)",
+            color: side === s ? T.leatherDark : T.ink,
+            border: `1px solid ${side === s ? T.gold : T.chalkDim}`,
+            fontFamily: "'Barlow Condensed',sans-serif", letterSpacing: .8,
+            boxShadow: side === s ? SHADOW_SM : "none",
           }}>
-            {o.name} <span style={{ opacity: 0.65, fontSize: 10 }}>offense vs {d.abbr} D</span>
+            {o.name} <span style={{ opacity: .7, fontSize: 10 }}>offense vs {d.abbr} D</span>
           </button>
         ))}
       </div>
 
-      <div style={{ flex: 1, overflowY: "auto", paddingRight: 4 }}>
+      <div style={{ flex: 1, overflowY: "auto", paddingRight: 5 }}>
         <DefenseCard def={defRow} defAbbr={def.abbr} season={league?.season} />
 
-        {injCount > 0 && (
-          <div style={{
-            background: C.card, border: `1px solid ${C.border}`, borderRadius: 6,
-            padding: "10px 14px", marginBottom: 16,
-          }}>
-            <div style={{ fontSize: 10, color: C.muted, letterSpacing: 0.6, marginBottom: 7 }}>
+        {offInjuries.length > 0 && (
+          <Panel style={{ padding: "11px 14px", marginBottom: 14 }}>
+            <div style={{ fontSize: 10, color: T.inkFaint, letterSpacing: .8, marginBottom: 8 }}>
               {off.abbr} INJURY REPORT
             </div>
-            <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
-              {(detail.injuries[off.abbr] || []).slice(0, 10).map((x, i) => (
-                <Badge key={i} tone={/out|doubtful/i.test(x.status) ? "cold" : "neutral"} icon={null}
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              {offInjuries.slice(0, 12).map((x, i) => (
+                <Badge key={i} tone={/out|doubtful/i.test(x.status) ? "cold" : "neutral"}
                   label={`${x.name}${x.pos ? ` (${x.pos})` : ""} — ${x.status}`} />
               ))}
             </div>
-          </div>
+          </Panel>
         )}
 
-        {err && <div style={{ color: C.red, fontSize: 12, padding: "10px 0" }}>Could not load: {err}</div>}
+        {err && <div style={{ color: T.poor, fontSize: 12, padding: "10px 0" }}>Could not load: {err}</div>}
+        {loading && (
+          <div style={{
+            textAlign: "center", padding: 40, color: T.inkDim,
+            fontFamily: "'Barlow Condensed',sans-serif", fontSize: 17, letterSpacing: 2.5,
+          }}>LOADING ROSTERS & SEASON STATS…</div>
+        )}
 
-        <Section title="QB vs pass defense" icon="🎯" players={players.QB} defAbbr={def.abbr}
-          defRank={defRow?.rankPass} type="QB" teams={teams} loading={loading} />
-        <Section title="WR / TE vs secondary" icon="⚡" players={players.WR} defAbbr={def.abbr}
-          defRank={defRow?.rankPass} type="WR" teams={teams} loading={loading} />
-        <Section title="RB vs run defense" icon="🏃" players={players.RB} defAbbr={def.abbr}
-          defRank={defRow?.rankRun} type="RB" teams={teams} loading={loading} />
+        {!loading && (
+          <>
+            <SectionTitle right={`vs ${def.abbr} pass D · ${ordinal(defRow?.rankPass)}`}>
+              🎯 Quarterback
+            </SectionTitle>
+            {groups.QB.map((p) => <PlayerCard key={p.id} p={p} kind="QB" {...common} />)}
 
-        <div style={{ fontSize: 10, color: C.muted, lineHeight: 1.6, paddingBottom: 20 }}>
-          EDGE = 60% player production grade + 40% opposing defense softness by league rank.
-          Player stats are full-season totals{players.QB[0]?.stats?.season ? ` (${players.QB[0].stats.season})` : ""};
-          early in a new season ESPN still reports the prior year. Always price against your book's actual line.
-        </div>
+            <SectionTitle right={`vs ${def.abbr} secondary · ${ordinal(defRow?.rankPass)}`}>
+              ⚡ Receivers &amp; Tight Ends
+            </SectionTitle>
+            {groups.REC.map((p) => <PlayerCard key={p.id} p={p} kind="REC" {...common} />)}
+
+            <SectionTitle right={`vs ${def.abbr} run D · ${ordinal(defRow?.rankRun)}`}>
+              🏃 Running Backs
+            </SectionTitle>
+            {groups.RB.map((p) => <PlayerCard key={p.id} p={p} kind="RB" {...common} />)}
+
+            <SectionTitle right={`vs ${off.abbr} offense · ${ordinal(defRow?.rankOffense)} scoring`}>
+              🛡 {def.abbr} Defenders
+            </SectionTitle>
+            {groups.DEF.length === 0 && (
+              <Panel style={{ padding: "12px 14px", fontSize: 11, color: T.inkDim, marginBottom: 10 }}>
+                No defensive stats returned. ESPN's athlete feed exposes defensive fields under
+                names this build infers rather than verified — see docs/api-notes.md.
+              </Panel>
+            )}
+            {groups.DEF.map((p) => <PlayerCard key={p.id} p={p} kind="DEF" {...common} />)}
+
+            <div style={{ fontSize: 10, color: T.inkFaint, lineHeight: 1.6, padding: "4px 0 22px" }}>
+              Projections are a season per-game baseline times the factor chain shown on each card.
+              Matchup uses league rank, capped at ±{Math.round(MATCHUP_SPREAD * 100)}%. Kickoff script and
+              defense-vs-archetype are declared but not yet modeled. Price everything against your book's line.
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
 }
+
+/* --------------------------------- app --------------------------------- */
 
 function App() {
   const now = new Date();
@@ -724,7 +1065,6 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
-  // Discover the current week once from the unparameterized scoreboard.
   useEffect(() => {
     (async () => {
       const d = await safeJSON(`${ESPN}/scoreboard`);
@@ -747,19 +1087,22 @@ function App() {
   const weeks = seasonType === 2 ? 18 : 5;
 
   return (
-    <div style={{
-      fontFamily: "'Inter',sans-serif", background: C.bg, height: "100vh",
-      color: C.text, display: "flex", flexDirection: "column",
+    <div className="field" style={{
+      fontFamily: "'Inter',sans-serif", height: "100vh", display: "flex", flexDirection: "column",
     }}>
+      {/* header */}
       <div style={{
-        borderBottom: `1px solid ${C.border}`, padding: "11px 18px", display: "flex",
-        alignItems: "center", gap: 14, background: C.panel, flexShrink: 0, flexWrap: "wrap",
+        padding: "11px 18px", display: "flex", alignItems: "center", gap: 14,
+        background: "linear-gradient(180deg, rgba(10,45,26,.95), rgba(10,45,26,.72))",
+        borderBottom: `2px solid ${T.chalk}`, flexShrink: 0, flexWrap: "wrap",
+        boxShadow: `0 3px 0 ${T.leatherDark}, 0 8px 20px rgba(0,0,0,.4)`, zIndex: 2,
       }}>
         <div style={{
-          fontFamily: "'Barlow Condensed',sans-serif", fontSize: 22, fontWeight: 700,
-          letterSpacing: 2, color: C.green,
+          fontFamily: "'Barlow Condensed',sans-serif", fontSize: 25, fontWeight: 700,
+          letterSpacing: 2.5, color: T.gold,
+          textShadow: `0 2px 0 ${T.leatherDark}, 0 4px 10px rgba(0,0,0,.55)`,
         }}>🏈 GRIDIRON EDGE</div>
-        <div style={{ color: C.muted, fontSize: 10, letterSpacing: 1, paddingTop: 2 }}>
+        <div style={{ color: T.inkDim, fontSize: 10, letterSpacing: 1.4, paddingTop: 3 }}>
           NFL MATCHUP ANALYSIS · APOLLO MEDIA
         </div>
         <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" }}>
@@ -779,42 +1122,45 @@ function App() {
       </div>
 
       <div className="gx-shell" style={{ display: "flex", flex: 1, overflow: "hidden" }}>
+        {/* sideline */}
         <div className="gx-side" style={{
-          width: 218, borderRight: `1px solid ${C.border}`, overflowY: "auto",
-          padding: "10px 0", flexShrink: 0,
+          width: 224, borderRight: `2px solid ${T.chalkDim}`, overflowY: "auto",
+          padding: "10px 0", flexShrink: 0, background: "rgba(0,0,0,.26)",
         }}>
-          <div style={{ padding: "0 12px 8px", fontSize: 10, color: C.muted, letterSpacing: 1 }}>
-            {loading ? "LOADING…" : `${sched.games.length} GAMES`}
-          </div>
-          {error && <div style={{ padding: "12px", color: C.red, fontSize: 11 }}>Error: {error}</div>}
+          <div style={{
+            padding: "0 12px 8px", fontSize: 9.5, color: T.inkFaint,
+            letterSpacing: 1.4, fontWeight: 600,
+          }}>{loading ? "LOADING…" : `${sched.games.length} GAMES`}</div>
+          {error && <div style={{ padding: "12px", color: T.poor, fontSize: 11 }}>Error: {error}</div>}
           {sched.games.map((g) => {
             const sel = selected?.id === g.id;
             const d = new Date(g.date);
             return (
               <button key={g.id} className="game-btn" onClick={() => setSelected(g)} style={{
-                width: "100%", textAlign: "left", background: sel ? "#111a13" : "transparent",
-                border: `1px solid ${sel ? C.green : "transparent"}`, borderRadius: 4,
-                padding: "8px 12px", cursor: "pointer", color: C.text, marginBottom: 1,
-                fontFamily: "'Inter',sans-serif",
+                width: "100%", textAlign: "left",
+                background: sel ? "rgba(255,199,44,.15)" : "transparent",
+                border: `1px solid ${sel ? T.gold : "transparent"}`,
+                borderLeft: `3px solid ${sel ? T.gold : "transparent"}`,
+                borderRadius: 3, padding: "8px 12px", cursor: "pointer",
+                color: T.ink, marginBottom: 1, fontFamily: "'Inter',sans-serif",
               }}>
                 <div style={{ fontSize: 13, fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}>
-                  {g.away.abbr} <span style={{ color: C.muted, fontSize: 11, fontWeight: 400 }}>at</span> {g.home.abbr}
+                  {g.away.abbr} <span style={{ color: T.inkFaint, fontSize: 10.5, fontWeight: 400 }}>at</span> {g.home.abbr}
                   {g.state === "in" && <span style={{
-                    width: 6, height: 6, borderRadius: "50%", background: C.green, display: "inline-block",
+                    width: 6, height: 6, borderRadius: "50%", background: T.gold, display: "inline-block",
                   }}/>}
                 </div>
-                <div style={{ fontSize: 10, color: C.muted, marginTop: 2 }}>
+                <div style={{ fontSize: 10, color: T.inkFaint, marginTop: 2 }}>
                   {d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}
-                  {" · "}
-                  {d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}
+                  {" · "}{d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}
                 </div>
               </button>
             );
           })}
           {!loading && sched.byes.length > 0 && (
-            <div style={{ padding: "12px", borderTop: `1px solid ${C.border}`, marginTop: 8 }}>
-              <div style={{ fontSize: 9, color: C.muted, letterSpacing: 0.8, marginBottom: 5 }}>ON BYE</div>
-              <div style={{ fontSize: 11, color: C.sub, lineHeight: 1.6 }}>{sched.byes.join(" · ")}</div>
+            <div style={{ padding: "12px", borderTop: `1px solid ${T.chalkFaint}`, marginTop: 8 }}>
+              <div style={{ fontSize: 9, color: T.inkFaint, letterSpacing: 1, marginBottom: 5 }}>ON BYE</div>
+              <div style={{ fontSize: 11, color: T.inkDim, lineHeight: 1.6 }}>{sched.byes.join(" · ")}</div>
             </div>
           )}
         </div>
@@ -823,21 +1169,22 @@ function App() {
           {!selected && !loading && (
             <div style={{
               display: "flex", flexDirection: "column", alignItems: "center",
-              justifyContent: "center", height: "100%", gap: 10, textAlign: "center",
+              justifyContent: "center", height: "100%", gap: 11, textAlign: "center",
             }}>
-              <div style={{ fontSize: 44 }}>🏈</div>
+              <div style={{ fontSize: 46 }}>🏈</div>
               <div style={{
-                fontFamily: "'Barlow Condensed',sans-serif", fontSize: 24, fontWeight: 700,
-                letterSpacing: 2, color: C.muted,
+                fontFamily: "'Barlow Condensed',sans-serif", fontSize: 26, fontWeight: 700,
+                letterSpacing: 2.5, color: T.chalk,
+                textShadow: `0 2px 0 ${T.leatherDark}`,
               }}>SELECT A GAME</div>
-              <div style={{ color: C.muted, fontSize: 12, maxWidth: 320 }}>
-                QB, WR/TE and RB production graded against the opposing defense's league ranks,
-                with weather, injury and divisional context.
+              <div style={{ color: T.inkDim, fontSize: 12, maxWidth: 340, lineHeight: 1.6 }}>
+                Season production and a projected line for every skill player and defender,
+                adjusted for the defense they're facing.
               </div>
-              {!league && <div style={{ color: C.sub, fontSize: 11 }}>Loading league defensive ranks…</div>}
+              {!league && <div style={{ color: T.inkFaint, fontSize: 11 }}>Loading league defensive ranks…</div>}
             </div>
           )}
-          {selected && <GameView key={selected.id} game={selected} league={league} byes={sched.byes} />}
+          {selected && <GameView key={selected.id} game={selected} league={league} />}
         </div>
       </div>
     </div>

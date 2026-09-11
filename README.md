@@ -6,35 +6,50 @@ Sister project to [Diamond Edge](https://github.com/ApolloJosh/diamond-edge) (ML
 
 ## What it does
 
-Pulls live data from ESPN's public NFL API and grades offensive production against the
-specific defense it's facing, for every game on the slate:
+Pulls live data from ESPN's public NFL API and, for every player on the slate, separates
+**what he has actually done** from **what to expect this week**:
 
-- **QB vs pass defense** — passer rating, YPA, completion %, TD%, INT%
-- **WR/TE vs secondary** — yards per game, targets per game, YPR, receptions, TDs
-- **RB vs run defense** — yards per game, carries per game, YPC, TDs, receiving work
-- **Defensive league ranks** — every opponent is scored 1–32 on points allowed, pass
-  defense, run defense, coverage and pressure, so a good player against a bad defense
-  reads differently than a good player against an elite one
-- **EDGE score** — 0–100 per player: 60% production grade, 40% how exploitable the
-  opposing defense is by rank. Both inputs stay visible on screen.
-- **Weather flags** — wind gusts 15+ mph and sub-35°F, suppressed automatically for domes
-- **Injury report** — pulled from ESPN's game summary feed, flagged inline on each player
-- **Divisional flag** — divisional matchups trend under
-- **Week selector** — any week of the regular season or postseason, current or prior years
+- **Season block** — real production, color-graded against fixed tiers
+- **Projected line** — that season baseline run through a chain of matchup factors,
+  with every factor and its multiplier shown on the card
 
-## How to use it
+Covered positions:
 
-Open `index.html` in any browser. No build step, no install, no account, no API key.
-Requires an internet connection to pull live ESPN data.
+- **QB** — yards/game, passer rating, YPA, completion %, TD%, INT%, TD/game, rush yards/game
+- **WR / TE** — yards/game, targets/game, receptions/game, YPR, TDs
+- **RB** — yards/game, carries/game, YPC, receptions/game, TDs
+- **Defenders** — tackles/game, sacks/game, INTs/game, passes defended, TFL, forced fumbles
+  for the six most productive players on the defense being faced
 
-## How the EDGE score works
+Plus: league-wide defensive ranks (1–32) for every opponent, weather flags, injury report,
+divisional-game flag, bye teams, and a week selector for any week of any recent season.
+
+## The projection model
 
 ```
-EDGE = (player production grade × 0.60) + (opposing defense softness × 0.40)
+projected line = season per-game baseline × factor₁ × factor₂ × …
 ```
 
-Production grade averages the color-graded stat tiers for that player's position.
-Defense softness is the opponent's league rank (1 = toughest, 32 = softest) normalized 0–1.
+Each factor declares whether it is modeled yet, so the card shows the full intended chain
+and marks what is still pending. Adding a factor is one object in `buildFactors()`.
+
+| Factor | Status | How it works |
+|---|---|---|
+| Opponent defense vs position | **active** | Opponent's pass-D or run-D league rank mapped to a multiplier, capped at ±12% (rank 1 → ×0.88, rank 32 → ×1.12) |
+| Weather | **active** | Wind gusts and cold suppress passing, mildly help rushing; domes are exempt |
+| Defensive-player volume | **active** | Opposing offense's scoring rank as a snap-volume proxy, capped at ±8% |
+| Kickoff window / game script | *pending* | Declared, multiplier 1.000, not yet modeled |
+| Defense vs archetype | *pending* | Needs charting data ESPN doesn't expose publicly |
+
+**Archetypes are already classified** from production shape — Deep threat, Volume WR1,
+Possession WR, Receiving back, Bruiser, Explosive back, Move TE, Dual threat, Pocket passer.
+The classification is live and tagged on each card; what's missing is the *defense vs that
+archetype* half, which requires slot/wide snap counts and box-count data. Rather than invent
+a number, that factor renders as pending.
+
+### EDGE score
+
+Still on every card: 0–100, 60% production grade + 40% opponent softness by rank.
 
 | EDGE | Read |
 |---|---|
@@ -45,10 +60,21 @@ Defense softness is the opponent's league rank (1 = toughest, 32 = softest) norm
 | < 28 | Fade |
 
 **Honest limitations.** ESPN's public feed does not expose yards allowed by position or
-DVOA. Points allowed is *total* defense, not split pass/rush. The pass-defense and
-run-defense ranks are composites of sack rate, passes-defended rate, run-stuff rate and
-tackles-for-loss rate — directional signals, not opponent-adjusted efficiency. Treat EDGE
-as a shortlist generator, then price it against your book's actual number.
+DVOA. Points allowed is *total* defense, not split pass/rush. The pass-D and run-D ranks are
+composites of sack rate, passes-defended rate, run-stuff rate and tackles-for-loss rate —
+directional signals, not opponent-adjusted efficiency. Treat a projection as a shortlist
+generator, then price it against your book's actual number.
+
+## How to use it
+
+Open `index.html` in any browser. No build step, no install, no account, no API key.
+Requires an internet connection to pull live ESPN data.
+
+## Design
+
+Field green with white chalk lines, goalpost-yellow accents for projections and highlights,
+and football-leather brown for shadows and the projection plate. Barlow Condensed for
+numbers, Inter for body text.
 
 ## Data source
 
@@ -60,11 +86,12 @@ falls back automatically, and labels which season each stat came from.
 
 ## Roadmap
 
+- [ ] Verify defensive athlete stat field names against a live response (see api-notes §8)
+- [ ] Model the kickoff-window / game-script factor
+- [ ] Defense vs archetype (needs a charting data source — PFF, Sports Info Solutions)
 - [ ] True yards allowed by position (requires aggregating opponent box scores)
-- [ ] Line movement tracker (reverse line movement, key number alerts at 3 / 7 / 10)
+- [ ] Line movement tracker (reverse line movement, key numbers at 3 / 7 / 10)
 - [ ] Player prop comparison vs the book's posted line
-- [ ] Short-week and off-bye situational flags
-- [ ] Backup QB detection (lines lag QB news)
 - [ ] Depth chart ordering instead of production ordering for early-season slates
 
 ## Stack
