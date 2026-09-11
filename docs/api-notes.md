@@ -134,6 +134,36 @@ production itself is still from a different offense and deserves a second look.
 Spot-verified at Week 1 2026: Travis Etienne Jr. → NO, Kenny Gainwell → TB,
 Wan'Dale Robinson → TEN, all confirmed against the live roster endpoint.
 
+## 10. Played games on the board, and the leakage guard
+
+ESPN's week endpoint returns the whole week, including games that have already finished —
+`competitions[].status.type.state` is `pre` | `in` | `post`. Two separate problems follow.
+
+**a) A finished game can't be bet.** At Week 1 of 2026, NE @ SEA and SF @ LAR were already
+final, and their players occupied four of the top slots on the board (Stafford 1st QB, Nacua
+1st WR, McCaffrey 2nd RB, Smith-Njigba 3rd WR) — 4 of 32 teams crowding out the 14 matchups
+still ahead. The board now defaults to `state === "pre"` with an "Include played games"
+toggle, and the sidebar shows FINAL with the score.
+
+**b) Data leakage, once stats come from the current season.** While the stat sample falls
+back a year, a completed game's result is *not* in the numbers. Verified at Week 1 2026: the
+board projected Puka Nacua for 117.6 receiving yards; in the game that had already been
+played he had 74. The projection didn't move toward the result, because it was built from his
+2025 per-game (107.2) times the SF matchup multiplier.
+
+That stops being true the moment `seasonHasSample()` flips to the current season (around Week
+5). From then on, any `post` game on the board is being "projected" using a sample that
+already contains its result — the projection is partly predicting an outcome it was fed.
+`runScan()` therefore tags each row:
+
+```js
+leakage: league.season === year && meta.game.state === "post"
+```
+
+and those rows render a "result is in the stat sample" warning. The guard is deliberately
+narrow: it fires only when the stat season and the scanned season match, so the honest
+fallback case isn't flagged as dirty.
+
 ## Season rollover
 
 In early September the new season exists on the scoreboard but every stat endpoint still
