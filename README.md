@@ -47,6 +47,26 @@ Covered positions:
 Plus: league-wide defensive ranks (1–32) for every opponent, weather flags, injury report,
 divisional-game flag, bye teams, and a week selector for any week of any recent season.
 
+## What the data actually supports
+
+Every constant in the model was chosen by backtest, not by intuition — 3,084 player-games,
+predicting each week from prior weeks only. Full write-up in [`docs/model.md`](docs/model.md),
+re-runnable harness in [`docs/backtest.js`](docs/backtest.js). The headlines:
+
+- **Opponent rushing defense barely predicts anything.** Full-strength opponent adjustment made
+  RB projections *worse* (MAE 26.57 → 27.04). Optimal exponent ≈ 0.10, i.e. almost off.
+  Residual correlation: 0.049. Team rushing-defense stats are mostly a game-script artifact.
+- **Opponent passing defense does predict, mildly.** QB yards improve at exponent 0.25
+  (65.35 → 64.65), residual correlation 0.141. The asymmetry is measured, not assumed.
+- **Recency helps volume, hurts passing.** Carries blend 50/50 season+last-3 (4.30 → 4.20 MAE);
+  last-3 passing yards is 7% *worse* than the season average.
+- **The range beats the point estimate.** Median game-to-game variation is ~60% of a player's
+  average — a back averaging 65 yards has a standard deviation near 39. But the 25–75 band from
+  his game log held the actual result **47.7%** of the time against an ideal 50%.
+
+So the tool leads with a **range**, demotes the point estimate, and applies opponent factors at
+the strength the data justifies rather than the strength that looks impressive.
+
 ## The projection model
 
 ```
@@ -58,10 +78,12 @@ and marks what is still pending. Adding a factor is one object in `buildFactors(
 
 | Factor | Status | How it works |
 |---|---|---|
-| Opponent defense vs position | **active** | Opponent's pass-D or run-D league rank mapped to a multiplier, capped at ±12% (rank 1 → ×0.88, rank 32 → ×1.12) |
-| Weather | **active** | Wind gusts and cold suppress passing, mildly help rushing; domes are exempt |
-| Defensive-player volume | **active** | Opposing offense's scoring rank as a snap-volume proxy, capped at ±8% |
-| Kickoff window / game script | *pending* | Declared, multiplier 1.000, not yet modeled |
+| Opponent pass defense | **active ^0.25** | Real pass yards allowed per game ÷ league average, aggregated from every box score |
+| Opponent run defense | **active ^0.10** | Real rush yards allowed and yards per carry — deliberately near-zero, because that's what it measured |
+| Carry volume recency | **active** | 50/50 season + last 3 games, applied to carries only |
+| Weather | **active** | Wind gusts and cold suppress passing, mildly help rushing; domes exempt |
+| Defensive-player volume | **active** | Opposing offense's actual plays per game vs league average |
+| Vegas implied team total | *context* | Real closing line from the scoreboard, shown but not multiplied in — ESPN retains no historical lines, so it can't be validated |
 | Defense vs archetype | *pending* | Needs charting data ESPN doesn't expose publicly |
 
 **Archetypes are already classified** from production shape — Deep threat, Volume WR1,

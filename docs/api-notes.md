@@ -164,6 +164,68 @@ and those rows render a "result is in the stat sample" warning. The guard is del
 narrow: it fires only when the stat season and the scanned season match, so the honest
 fallback case isn't flagged as dirty.
 
+## 11. Two self-inflicted bugs worth not repeating
+
+**The response cache had no expiry.** Every fetch was memoised by URL for the life of the
+page, so the Rescan button re-ran the whole pipeline and got byte-identical cached data back
+— it could not change anything, ever. Worse, a game flipping from `pre` to `post` while the
+page sat open would never be noticed. Entries now expire after 5 minutes and a forced rescan
+calls `clearCache()` first.
+
+**The played-game filter trusted a single field.** `state === "post"` is correct (verified),
+but if that one key were ever absent the filter fails *open* — finished games quietly return
+to the board and nothing looks broken. `hasStarted()` now takes three independent signals:
+`state` (`post`/`in`), `status.type.completed`, and kickoff timestamp vs now. Unit-tested
+including a degraded feed with `state` and `completed` stripped, where the kickoff time alone
+still catches both finished games.
+
+Related: the header carries a `BUILD` stamp. Diagnosing "I updated the file but nothing
+changed" without one is guesswork — bump it on every change.
+
+## 12. Real yards allowed — built by inverting box scores
+
+ESPN has no opponent split (`/statistics/{1..4}` all 404, `/statistics/opponent` 404) and its
+`yardsAllowed` / `pointsAllowed` fields are phantom zeros. So the tool builds its own:
+
+1. Walk weeks 1–18 of the stat season, collect every `state === "post"` event (272 for a full year).
+2. `summary?event={id}` for each — `boxscore.teams[].statistics` carries both teams'
+   `totalOffensivePlays`, `totalYards`, `rushingYards`, `rushingAttempts`,
+   `yardsPerRushAttempt`, `netPassingYards`, `completionAttempts`.
+3. A team's **defense** is every row where it appears as the opponent. What its opponents gained
+   is what it allowed.
+
+**Measured cost: 272 box scores in ~6 seconds** at concurrency 8 (~32 ms each), then cached in
+`localStorage` under `gx_db_{season}_v5`. The payloads are large (~400 KB each) but they
+transfer compressed and parse fast; only the extracted numbers are stored.
+
+This matters beyond tidiness. The old rank proxy (stuffs + TFL + total points allowed) put
+Baltimore **24th against the run** — a favorable matchup worth +5.8% on a back's projection.
+The real box scores say BAL allowed **106.6 rush yards per game against a league average of
+116.9**: an above-average run defense. The proxy had the direction backwards.
+
+## 13. Odds are available, but only looking forward
+
+`competitions[].odds[0]` carries `spread`, `overUnder` and `homeTeamOdds.favorite`
+(provider: DraftKings). Implied team total is `overUnder/2 ± |spread|/2`.
+
+It is present on **upcoming** games only. Of 272 completed 2025 games, **zero** retained a
+closing line. That is why the implied total is displayed as context and not multiplied into
+the projection — there is no way to backtest a weight for it from this feed. Validating it
+needs a historical closing-line dataset from somewhere else.
+
+## 14. teamrankings.com cannot be used at runtime
+
+`fetch("https://www.teamrankings.com/…")` from any other origin fails with
+`TypeError: Failed to fetch` — no CORS headers. A browser-based tool can never read it live, no
+matter how the request is framed. That is a property of their server, not a thing a scraper
+subscription changes.
+
+Everything the site provides for team stats — rush/pass yards allowed, yards per carry allowed,
+plays per game — is derivable free from the box-score aggregation in §12 and is live rather
+than scraped. Paid scraping would only earn its keep for data ESPN genuinely lacks: historical
+closing betting lines (§13), or snap counts / route participation / aDOT, which would unlock
+the defense-vs-archetype factor.
+
 ## Season rollover
 
 In early September the new season exists on the scoreboard but every stat endpoint still
